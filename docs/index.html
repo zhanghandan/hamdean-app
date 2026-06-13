@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Hamdean — AI 桌面助手</title>
+<style>
+:root{--bg:#0a0a0f;--srf:#12121a;--bd:#1e1e2e;--tx:#e8e8ed;--t2:#8e8e9c;--t3:#5e5e6e;--a:#f0a346}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);line-height:1.6}
+.hero{text-align:center;padding:100px 20px 60px;background:linear-gradient(180deg,rgba(240,163,70,.05),transparent)}
+.hero h1{font-size:48px;font-weight:800;background:linear-gradient(135deg,#f0a346,#f5c842);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{font-size:18px;color:var(--t2);margin-top:12px;max-width:500px;margin-left:auto;margin-right:auto}
+.btn{display:inline-block;padding:14px 32px;border-radius:12px;font-weight:700;font-size:16px;text-decoration:none;cursor:pointer;transition:.2s;margin:8px}
+.btn-primary{background:linear-gradient(135deg,#f0a346,#f5c842);color:#1a1a12}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(240,163,70,.3)}
+.btn-outline{border:1px solid var(--a);color:var(--a)}
+.btn-outline:hover{background:rgba(240,163,70,.08)}
+.container{max-width:1000px;margin:0 auto;padding:0 20px}
+.features{padding:80px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}
+.card{background:var(--srf);border:1px solid var(--bd);border-radius:14px;padding:28px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--t2);font-size:14px}
+.card .icon{font-size:28px;margin-bottom:12px}
+.pricing{padding:80px 0;text-align:center}
+.price-card{display:inline-block;background:var(--srf);border:1px solid var(--a);border-radius:16px;padding:36px 48px;margin:20px}
+.price{font-size:42px;font-weight:800;color:var(--a)}
+.price span{font-size:16px;color:var(--t2)}
+.footer{text-align:center;padding:40px 0;color:var(--t3);font-size:12px;border-top:1px solid var(--bd)}
+.footer a{color:var(--a);text-decoration:none}
+.nav{display:flex;justify-content:center;gap:32px;padding:20px}
+.nav a{color:var(--t2);text-decoration:none;font-size:14px}
+.nav a:hover{color:var(--a)}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#features">功能</a>
+  <a href="#pricing">定价</a>
+  <a href="#download">下载</a>
+  <a href="https://github.com/zhanghandan/hamdean-app">GitHub</a>
+</nav>
+
+<section class="hero">
+  <h1>Hamdean</h1>
+  <p>你的桌面 AI 助手 — 文件管理、自动学习、3D神经网络可视化，一切都在本地运行</p>
+  <div style="margin-top:32px">
+    <a href="https://github.com/zhanghandan/hamdean-app/releases/latest" class="btn btn-primary">下载 Windows 版</a>
+    <a href="https://github.com/zhanghandan/hamdean-app" class="btn btn-outline">GitHub</a>
+  </div>
+</section>
+
+<div class="container">
+  <section id="features" class="features">
+    <div class="card">
+      <div class="icon">&#9881;</div>
+      <h3>全电脑操控</h3>
+      <p>读取文件、搜索任意目录、运行命令，AI 自动识别意图并执行</p>
+    </div>
+    <div class="card">
+      <div class="icon">&#9993;</div>
+      <h3>邮箱验证登录</h3>
+      <p>实名邮箱注册，验证码确保安全，支持 163/QQ/Gmail SMTP</p>
+    </div>
+    <div class="card">
+      <div class="icon">&#129504;</div>
+      <h3>后台自动学习</h3>
+      <p>AI 每15秒自动分析对话，提取知识点，构建知识图谱</p>
+    </div>
+    <div class="card">
+      <div class="icon">&#128268;</div>
+      <h3>3D 神经网络可视化</h3>
+      <p>Three.js 实时3D渲染，行星围绕太阳旋转，悬停查看节点详情</p>
+    </div>
+    <div class="card">
+      <div class="icon">&#128274;</div>
+      <h3>安全防护</h3>
+      <p>PBKDF2 密码哈希、登录限流、5次失败锁定15分钟</p>
+    </div>
+    <div class="card">
+      <div class="icon">&#128260;</div>
+      <h3>自动更新</h3>
+      <p>新版本发布后自动检测、一键下载安装</p>
+    </div>
+  </section>
+
+  <section id="pricing" class="pricing">
+    <h2 style="font-size:32px;margin-bottom:8px;">简单定价</h2>
+    <p style="color:var(--t2);margin-bottom:40px;">注册即享 3 天免费试用</p>
+    <div class="price-card">
+      <div style="font-size:14px;color:var(--t2);margin-bottom:8px;">Pro 会员</div>
+      <div class="price">¥99<span>/月</span></div>
+      <p style="color:var(--t2);margin-top:12px;font-size:14px;">解锁自动学习<br>实时 AI 活动追踪<br>优先支持</p>
+    </div>
+  </section>
+</div>
+
+<footer class="footer">
+  <p>&copy; 2026 Hamdean. All rights reserved. &middot; <a href="https://github.com/zhanghandan/hamdean-app">GitHub</a></p>
+</footer>
+
+</body>
+</html>
