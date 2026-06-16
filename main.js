@@ -476,6 +476,7 @@ function saveJSON(fp, obj) {
   const sensitiveFiles = [USERS_FILE, SESSIONS_FILE, path.join(DATA_DIR, 'config.json')];
   if (sensitiveFiles.includes(fp)) {
     writeSecure(fp, json);
+    return;
   }
   fs.writeFileSync(fp, json);
 }
@@ -506,6 +507,22 @@ function findSession(token) {
   return s;
 }
 function findUser(id) { return userStore.users.find(u => u.id === id); }
+async function validateSessionViaECS(token) {
+  if (!token) return null;
+  try {
+    const r = await fetch(AUTH_SERVER + '/api/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+      agent: httpsAgent
+    });
+    const d = await r.json();
+    return d.ok ? d.user : null;
+  } catch (e) {
+    console.error('[ECS Session]', e.message);
+    return null;
+  }
+}
 
 // ===== SMTP Config =====
 let appConfig = loadJSON(CONFIG_FILE);
@@ -1058,11 +1075,11 @@ server.post('/api/learn', async (req, res) => {
 let autoLearnRunning = false;
 let autoLearnTimer = null;
 
-server.get('/api/auto-learn/activity', (req, res) => {
+server.get('/api/auto-learn/activity', async (req, res) => {
   const token = (req.headers.authorization || '').replace('Bearer ', '') || req.query.token;
   if (!token) return res.status(401).json({ error: 'Token required' });
-  const sess = findSession(token);
-  if (!sess) return res.status(401).json({ error: 'Invalid session' });
+  const user = await validateSessionViaECS(token);
+  if (!user) return res.status(401).json({ error: 'Invalid session' });
   const since = parseInt(req.query.since) || 0;
   res.json({ running: autoLearnRunning, activities: activityLog.filter(a => a.time > since), totalKnowledge: knowledgeStore.entries.length, totalNodes: knowledgeStore.nodes.length });
 });
@@ -1071,10 +1088,8 @@ server.post('/api/auto-learn/start', async (req, res) => {
   try {
     const token = req.body.token || (req.headers.authorization || '').replace('Bearer ', '');
     if (!token) return res.status(401).json({ error: 'Token required' });
-    const sess = findSession(token);
-    if (!sess) return res.status(401).json({ error: 'Invalid session' });
-    const user = findUser(sess.userId);
-    if (!user) return res.status(401).json({ error: 'User not found' });
+    const user = await validateSessionViaECS(token);
+    if (!user) return res.status(401).json({ error: 'Invalid session' });
     if (autoLearnRunning) return res.json({ ok: true, message: '已在运行中' });
 
     autoLearnRunning = true;
@@ -1895,6 +1910,7 @@ server.post('/api/chat', async (req, res) => {
     if (!base_url || !api_key || !model || !messages) return res.status(400).json({ error: 'Missing' });
     const useSSE = !!stream;
     if (useSSE) {
+      req.setTimeout(600000); // 10min for agentic tasks
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -2227,6 +2243,7 @@ ipcMain.handle('win-ismax', () => mw?.isMaximized() ?? false);
 
 // Auto-updater
 autoUpdater.autoDownload = false;
+autoUpdater.setFeedURL("https://47.93.39.27/download/");
 autoUpdater.autoInstallOnAppQuit = true;
 autoUpdater.on('update-available', (info) => {
   console.log('Update available:', info.version);

@@ -280,9 +280,9 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 let keys=ld(K)||[],aid=ld(A)||null,sp=ld(P)||'';
 if(sp.includes('张涵')){sp='';sv(P,'')}
 let chats=ld(C)||[];
-chats=chats.map(c=>{c.msgs=c.msgs.filter(m=>!m.content.includes('张涵'));return c}).filter(c=>c.msgs.length>0||c.title!=='New Chat');
+chats=chats.map(c=>{c.msgs=c.msgs.filter(m=>!m.content.includes('张涵'));c._sending=false;c._ac=null;return c}).filter(c=>c.msgs.length>0||c.title!=='New Chat');
 if(chats.length===0){chats=[]}sv(C,chats)
-let cid=null,sending=false,ac=null,editId=null;
+let cid=null,editId=null;
 let loginMode='login',loginPolling=null;
 function ak(){return keys.find(k=>k.id===aid)||null}
 function cc(){return chats.find(c=>c.id===cid)||chats[0]}
@@ -572,30 +572,66 @@ function saveK(){let n=document.getElementById('kName').value.trim(),u=document.
 function delKey(){if(!editId)return;keys=keys.filter(k=>k.id!==editId);if(aid===editId){aid=keys[0]?.id||null;sv(A,aid||'')}sv(K,keys);closeKM();rKeys();toast(_t('keyDeleted'))}
 
 // ===== CHAT =====
-function newChat(){let c={id:uid(),title:'New Chat',msgs:[],at:Date.now()};chats.unshift(c);cid=c.id;sv(C,chats);rChats();rMsgs();$in.focus()}
-function swChat(id){cid=id;rChats();rMsgs();$in.focus()}
-function delChat(id){if(chats.length<=1)return;chats=chats.filter(c=>c.id!==id);if(cid===id){cid=chats[0].id;rMsgs()}sv(C,chats);rChats()}
-async function send(){
+function runningChat(){return chats.find(c=>c._sending)}
+function abortChat(c){if(!c||!c._ac)return;try{c._ac.abort('user')}catch{}c._sending=false;c._ac=null}
+function newChat(){
+  let running = runningChat();
+  if(running) abortChat(running);
+  let c={id:uid(),title:'New Chat',msgs:[],at:Date.now(),_sending:false,_ac:null};
+  chats.unshift(c);cid=c.id;sv(C,chats);rChats();rMsgs();$in.focus();
+  updateSendBtn();
+}
+function swChat(id){
+  if(id===cid)return;
+  let running = runningChat();
+  if(running) abortChat(running);
+  cid=id;rChats();rMsgs();$in.focus();
+  updateSendBtn();
+}
+function delChat(id){if(chats.length<=1)return;let wasRunning=chats.find(c=>c.id===id)?._sending;if(wasRunning)abortChat(chats.find(c=>c.id===id));chats=chats.filter(c=>c.id!==id);if(cid===id){cid=chats[0].id;rMsgs()}sv(C,chats);rChats();updateSendBtn()}
+function updateSendBtn(){
+  let running = runningChat();
+  $sb.classList.toggle('running', !!running);
+  $sb.textContent = running ? '#' : '^';
+  $sb.disabled = running ? false : (!ak() || !$in.value.trim());
+}
+async function send(forceStop){
+  // If a chat is running and user clicks send (forceStop), abort it
+  let running = runningChat();
+  if(forceStop && running){
+    abortChat(running);
+    // Mark the aborted message
+    let lastMsg = running.msgs[running.msgs.length-1];
+    if(lastMsg && lastMsg.streaming){lastMsg.streaming=false;lastMsg.content='[中断]'}
+    sv(C,chats);
+    if(cid===running.id)rMsgs();
+    updateSendBtn();
+    return;
+  }
+  if(running) return; // another chat is running, ignore
   let txt=$in.value.trim(),a=ak();if(!txt||!a)return;
-  if(sending){ac.abort();sending=false;ac=null;$sb.classList.remove('running');$sb.textContent='^';await new Promise(r=>setTimeout(r,60))}
   let c=cc();if(!c)return;
+  // Abort this chat's previous stream if somehow still running
+  if(c._sending && c._ac){abortChat(c);await new Promise(r=>setTimeout(r,60))}
   let userContent=imageBase64?[{type:'text',text:txt},{type:'image_url',image_url:{url:imageBase64}}]:txt;
   let um={id:'u_'+uid(),role:'user',content:userContent,at:Date.now()};c.msgs.push(um);
   if(c.title==='New Chat')c.title=txt.slice(0,24)+(txt.length>24?'...':'');
-  sv(C,chats);$in.value='';$in.style.height='auto';$sb.disabled=true;
+  sv(C,chats);$in.value='';$in.style.height='auto';
   let am={id:'a_'+uid(),role:'assistant',content:'▊',at:Date.now(),streaming:true};c.msgs.push(am);
   $ms.appendChild(msgEl(um));$ms.appendChild(msgEl(am));scrollB();rChats();removeImage();
   let sel=document.createElement('div');sel.className='status';sel.id='toolStatus';sel.innerHTML='<span class="status-dot"></span> 分析中...';$ms.appendChild(sel);scrollB();
-  sending=true;$sb.classList.add('running');$sb.textContent='#';$sb.disabled=false;ac=new AbortController();
-  let toolCount=0,autoRound=0;
+  c._sending=true;c._ac=new AbortController();updateSendBtn();
+  let myChatId=c.id, toolCount=0, autoRound=0;
   try{
     let apiMs=c.msgs.filter(m=>!m.streaming).map(m=>({role:m.role,content:m.content}));
-    let resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:a.baseUrl,api_key:a.apiKey,model:a.model,messages:apiMs,system_prompt:sp||undefined,stream:true}),signal:ac.signal});
+    let resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:a.baseUrl,api_key:a.apiKey,model:a.model,messages:apiMs,system_prompt:sp||undefined,stream:true}),signal:c._ac.signal});
     if(!resp.ok){let d=await resp.json().catch(()=>({}));throw new Error(d.error||'请求失败 '+resp.status)}
     if(!resp.headers.get('Content-Type')?.includes('text/event-stream')){let d=await resp.json();am.content=d.content||d.error||'(空)';am.streaming=false;sv(C,chats);rMsgs();scrollB();return}
     let reader=resp.body.getReader(),decoder=new TextDecoder(),buffer='';
     while(true){
+      if(c.id !== cid) break; // switched away — stop processing
       let{value,done}=await reader.read();if(done)break;
+      if(c.id !== cid) break; // re-check after await
       buffer+=decoder.decode(value,{stream:true});
       let lines=buffer.split('\n');buffer=lines.pop()||'';
       for(let line of lines){
@@ -608,7 +644,7 @@ async function send(){
             toolCount++;
             let st=document.getElementById('toolStatus');if(st)st.innerHTML='<span class="status-dot" style="background:#22c55e;"></span> 工具: '+esc(evt.name)+' ('+toolCount+')';
             let tm={id:'t_'+uid(),role:'system',content:'[工具: '+evt.name+']\n'+esc(evt.args||'')+'\n→ '+esc((evt.result||'').slice(0,500)),at:Date.now()};
-            c.msgs.splice(c.msgs.length-1,0,tm);$ms.insertBefore(msgEl(tm),$ms.lastElementChild);
+            c.msgs.splice(c.msgs.length-1,0,tm);if(c.id===cid)$ms.insertBefore(msgEl(tm),$ms.lastElementChild);
           }else if(evt.type==='auto_continue'){
             autoRound=evt.round;
             let st=document.getElementById('toolStatus');if(st)st.innerHTML='<span class="status-dot" style="background:#f0a346;"></span> 自动继续 第'+autoRound+'/'+evt.total+'轮...';
@@ -623,11 +659,22 @@ async function send(){
         }catch(e){}
       }
     }
-    am.content=am.content||'(空)';am.streaming=false;sv(C,chats);rMsgs();scrollB();
+    am.content=am.content||'(空)';am.streaming=false;sv(C,chats);if(c.id===cid){rMsgs();scrollB()}
     let el=document.querySelector('[data-mid="'+am.id+'"] .msg-content');if(el)el.innerHTML=addCp(marked.parse(am.content||''));
     setTimeout(()=>{document.querySelectorAll('pre code').forEach(b=>{try{hljs.highlightElement(b)}catch(e){}})},50);
-  }catch(err){console.error('Send error:',err);am.content=err.name==='AbortError'?'[超时]':'错误: '+err.message;am.streaming=false;sv(C,chats);rMsgs();scrollB()}
-  finally{sending=false;ac=null;$sb.classList.remove('running');$sb.textContent='^';$sb.disabled=!$in.value.trim();$in.focus();if(sel&&sel.parentNode)sel.remove()}
+  }catch(err){
+    console.error('Send error:',err);
+    let abortReason = c._ac?.signal?.reason || '';
+    if(err.name==='AbortError'){
+      am.content = (abortReason==='timeout'||abortReason==='user-timeout') ? '[超时]' : '[中断]';
+    } else {
+      am.content='错误: '+err.message;
+    }
+    am.streaming=false;sv(C,chats);if(c.id===cid){rMsgs();scrollB()}
+  }finally{
+    c._sending=false;c._ac=null;updateSendBtn();$in.focus();
+    if(sel&&sel.parentNode)sel.remove()
+  }
 }
 
 // ===== SYSTEM PROMPT =====
@@ -836,7 +883,7 @@ window.cp=function(b){let c=b.nextElementSibling?.textContent||'';navigator.clip
 
 // ===== EVENTS =====
 document.getElementById('btnNew').addEventListener('click',newChat);
-$sb.addEventListener('click',()=>{if(sending)ac.abort();else send()});
+$sb.addEventListener('click',()=>{let r=runningChat();if(r)send(true);else send()});
 $in.addEventListener('input',()=>{$sb.disabled=!ak()||!$in.value.trim();$in.style.height='auto';$in.style.height=Math.min($in.scrollHeight,140)+'px'});
 $in.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
 $bk.addEventListener('click',e=>{e.stopPropagation();if($kd.style.display==='block'){closeKD()}else{if(!keys.length){openKM(null);return}openKD()}});
