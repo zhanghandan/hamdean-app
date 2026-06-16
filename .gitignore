@@ -7,3 +7,12 @@ dist/
 # Encrypted data
 *.enc
 *.plain.bak
+
+# Backup files (may contain secrets)
+*.bak_*
+*.bak
+
+# Env files
+.env
+.env.local
+.env.*.local

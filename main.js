@@ -30,6 +30,12 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Proxy all /api/auth/* requests to the remote auth server
 server.all('/api/auth/*', (req, res) => {
+  let resSent = false;
+  const sendOnce = (status, data) => {
+    if (resSent) return;
+    resSent = true;
+    res.status(status).json(data);
+  };
   const targetUrl = AUTH_SERVER.replace(/\/+$/, '') + req.originalUrl;
   const urlObj = new URL(targetUrl);
   const body = req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : null;
@@ -54,19 +60,19 @@ server.all('/api/auth/*', (req, res) => {
     proxyRes.on('data', chunk => data += chunk);
     proxyRes.on('end', () => {
       try {
-        res.status(proxyRes.statusCode).json(JSON.parse(data));
+        sendOnce(proxyRes.statusCode, JSON.parse(data));
       } catch {
-        res.status(proxyRes.statusCode).send(data);
+        if (!resSent) { resSent = true; res.status(proxyRes.statusCode).send(data); }
       }
     });
   });
   proxyReq.on('error', (e) => {
     console.error('[AUTH PROXY]', e.message);
-    res.status(502).json({ error: 'Auth server unreachable: ' + e.message });
+    sendOnce(502, { error: 'Auth server unreachable: ' + e.message });
   });
   proxyReq.on('timeout', () => {
     proxyReq.destroy();
-    res.status(504).json({ error: 'Auth server timeout' });
+    sendOnce(504, { error: 'Auth server timeout' });
   });
   if (body) proxyReq.write(body);
   proxyReq.end();
@@ -527,8 +533,12 @@ async function validateSessionViaECS(token) {
 // ===== SMTP Config =====
 let appConfig = loadJSON(CONFIG_FILE);
 if (!appConfig.smtp) appConfig.smtp = {
-  host: 'smtp.163.com', port: 465, user: 'REDACTED@email.com',
-  pass: 'REDACTED', from: 'Hamdean <REDACTED@email.com>'
+  host: process.env.SMTP_HOST || '',
+  port: parseInt(process.env.SMTP_PORT) || 465,
+  secure: true,
+  user: process.env.SMTP_USER || '',
+  pass: process.env.SMTP_PASS || '',
+  from: process.env.SMTP_FROM || ''
 };
 
 function getMailer() {
@@ -1839,6 +1849,54 @@ function parseGeminiResponse(data) {
 }
 
 // ===== Self-Verification & Code Review =====
+async function checkCompleteness(provider, apiKey, model, apiUrl, userQuery, aiResponse, toolSummary) {
+  const prompt = `你的唯一任务是判断：以下AI回复是否**真正完成了用户的所有要求**？
+
+用户原始要求: ${userQuery.slice(0, 500)}
+${toolSummary ? '已执行的工具: ' + toolSummary.slice(0, 800) : '(未使用工具)'}
+AI的回复: ${aiResponse.slice(0, 1500)}
+
+严格判断标准：
+- 如果用户要求创建项目/文件/代码，AI是否真的创建了？回复中说"已创建"但实际没执行写文件工具 = 未完成
+- 如果用户要求多个步骤，所有步骤是否都完成了？
+- 如果AI的回复主要是"我会..."/"让我..."等计划性内容，没有任何实质性结果 = 未完成
+- 如果AI回复很短（<100字）且之前调用了工具，可能还有后续工作 = 未完成
+
+只回复一个JSON: {"complete": true/false, "reason": "简要说明"}`;
+
+  try {
+    const msgs = [{ role: 'user', content: prompt }];
+    let text = '';
+    if (provider === 'claude') {
+      const d = await callClaude(apiKey, model, msgs, '', null);
+      text = parseClaudeResponse(d).content || '';
+    } else if (provider === 'gemini') {
+      const d = await callGemini(apiKey, model, msgs, '', null);
+      text = parseGeminiResponse(d).content || '';
+    } else {
+      const r = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+        body: JSON.stringify({ model, messages: msgs, stream: false, max_tokens: 512, temperature: 0 }),
+        signal: AbortSignal.timeout(20000) });
+      if (r.ok) {
+        const j = await r.json();
+        text = j.choices?.[0]?.message?.content || '';
+      }
+    }
+    try {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) {
+        const j = JSON.parse(m[0]);
+        if (!j.complete) { console.log('[check] Incomplete:', j.reason); return j.reason || '任务未完成'; }
+      }
+    } catch {}
+    // Fallback: if text contains keywords suggesting incomplete
+    if (/未完|还需|还要|尚未|没完成|不全|缺少|遗漏|missing|incomplete|未完成/.test(text)) {
+      return text.slice(0, 200);
+    }
+    return null;
+  } catch (e) { console.log('[check] Error:', e.message); return null; }
+}
+
 async function selfVerify(provider, apiKey, model, apiUrl, userQuery, aiResponse, toolResults) {
   if (!aiResponse || aiResponse.length < 50) return null;
   const checkPrompt = `你是事实核查员。检查以下AI回复是否有编造或幻觉。
@@ -1910,7 +1968,7 @@ server.post('/api/chat', async (req, res) => {
     if (!base_url || !api_key || !model || !messages) return res.status(400).json({ error: 'Missing' });
     const useSSE = !!stream;
     if (useSSE) {
-      req.setTimeout(600000); // 10min for agentic tasks
+      req.setTimeout(1800000); // 30min for long agentic tasks (up to 100 rounds)
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -1990,7 +2048,7 @@ server.post('/api/chat', async (req, res) => {
 
     const provider = detectProvider(base_url);
     const MAX_ROUNDS = 15;
-    const MAX_AUTO_CONTINUE = 5;
+    const MAX_AUTO_CONTINUE = 100;
     let allToolCalls = [];
     let allFinalTexts = [];
     let finalText = '';
@@ -2081,55 +2139,58 @@ server.post('/api/chat', async (req, res) => {
       allFinalTexts.push(roundText);
       finalText = roundText;
 
-      // Auto-continue check — multi-layered
-      // Layer 1: AI called tools in this round → definitely has more work
-      let needsMore = gotToolCalls;
+      // ── Auto-continue decision ──
+      // Rule 1: Tools were called → ALWAYS continue (AI had work to do)
+      // Rule 2: Tools called + short response → definitely more work
+      // Rule 3: Model-based completeness check (last resort)
+      let needsMore = false;
+      let forceContinueReason = '';
 
-      // Layer 2: AI's response text indicates work in progress
-      if (!needsMore && roundText) {
-        const continuePatterns = [
-          /继续|下一步|接下来|还没完成|未完|还要|仍需|尚需|需要进一步|马上|正在|进行中/,
-          /正在执行|执行中|处理中|运行中|构建中|安装中|下载中|编译中|部署中|等待中/,
-          /让我[来做去]|我先|我来|我需要|我应该|我可以|我能|我会/,
-          /首先|第一步|开始|启动|初始化/,
-          /然后|接着|其次|之后|再[来做]/,
-          /先检查|先查看|先确认|先测试|先验证/,
-          /还没.*完|还需要|还差|尚未|未完成|未结束/,
-          /to be continue|in progress|working on|let me|I will|I need to/,
-          /^\s*(好的|OK|ok|好|嗯|明白了|了解|收到)[,\s]*$/,
-          /^\s*我来.{0,10}$/,
-        ];
-        for (const re of continuePatterns) {
-          if (re.test(roundText)) { needsMore = true; break; }
+      if (gotToolCalls) {
+        // If AI used tools this round, it HAD work. Always continue.
+        needsMore = true;
+        forceContinueReason = '工具调用后需继续';
+      }
+
+      // If we're still not sure, run completeness check
+      if (!needsMore && autoRound > 0) {
+        // AI stopped calling tools and thinks it's done — verify
+        const toolSummary = allToolCalls.map(t => t.tool + ':' + t.result.slice(0, 200)).join(' | ');
+        const incomplete = await checkCompleteness(provider, api_key, model, apiUrl, userQuery, roundText, toolSummary);
+        if (incomplete) {
+          needsMore = true;
+          forceContinueReason = '完整性检查未通过: ' + incomplete.slice(0, 100);
+          console.log('[auto] Completeness check failed, forcing continue:', incomplete.slice(0, 150));
         }
       }
 
-      // Layer 3: Short response after tool calls → likely incomplete
-      if (!needsMore && gotToolCalls && roundText && roundText.length < 100) {
-        needsMore = true;
-        console.log('[auto] Short response after tools, forcing continue');
-      }
-
-      // Layer 4: User's original request looks multi-step
-      if (!needsMore && userQuery && userQuery.length > 30) {
-        const multiStepPatterns = [
+      // Multi-step task detection (backup for first round where completeness check is skipped)
+      if (!needsMore && autoRound === 0 && userQuery && userQuery.length > 20) {
+        const multiStepRe = [
           /安装.*[并和]|部署.*[并和]|创建.*[并和]|搭建.*[并和]|配置.*[并和]|下载.*[并和]|编译.*[并和]|构建.*[并和]/,
           /先.*然后|先.*再|首先.*然后|第一步.*第二步/,
-          /完整|全套|整个|全部|所有/,
-          /帮我[做搞].*项目/,
+          /完整|全套|整个|全部|所有|帮我[做搞].*项目/,
           /生成.*项目|创建.*项目|初始化.*项目/,
           /自动化|自动部署|一键|批量/,
-          /扫描|检查|审查|审计|排查|巡检/,
+          /扫描|检查|审查|审计|排查|巡检|分析|修复|优化|重构/,
         ];
-        for (const re of multiStepPatterns) {
-          if (re.test(userQuery)) { needsMore = true; console.log('[auto] Multi-step task detected, forcing continue'); break; }
+        if (gotToolCalls && roundText && roundText.length < 200) {
+          needsMore = true;
+          forceContinueReason = '工具调用后回复过短(<200字)';
+        } else {
+          for (const re of multiStepRe) {
+            if (re.test(userQuery)) { needsMore = true; forceContinueReason = '多步骤任务'; console.log('[auto] Multi-step task detected'); break; }
+          }
         }
       }
 
       if (autoRound < MAX_AUTO_CONTINUE - 1 && needsMore) {
-        console.log('[auto] Round ' + (autoRound + 1) + ' done, auto-continuing...');
+        console.log('[auto] Round ' + (autoRound + 1) + ' → continue (' + forceContinueReason + ')');
         sse({ type: 'auto_continue', round: autoRound + 2, total: MAX_AUTO_CONTINUE });
-        ml.push({ role: 'user', content: '[系统自动继续] 继续执行剩余步骤，直到任务完全完成。直接做事，不重复已完成内容。' });
+        const continueMsg = forceContinueReason.includes('完整性')
+          ? `[系统自动继续] ⚠️ 你的任务尚未完成！原因: ${forceContinueReason}。请立即继续执行未完成的工作步骤，不要发送结束语。直接调用工具做事。`
+          : '[系统自动继续] ⚠️ 任务未完成，禁止发送最终回复！直接调用工具继续工作，不要写总结、不要道歉、不要解释为什么停。';
+        ml.push({ role: 'user', content: continueMsg });
         continue;
       }
       break;

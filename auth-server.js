@@ -68,8 +68,12 @@ function findUser(id) { return userStore.users.find(u => u.id === id); }
 // ===== SMTP =====
 let appConfig = loadJSON(CONFIG_FILE);
 if (!appConfig.smtp) appConfig.smtp = {
-  host: 'smtp.163.com', port: 465, user: 'REDACTED@email.com',
-  pass: 'REDACTED', from: 'Hamdean <REDACTED@email.com>'
+  host: process.env.SMTP_HOST || '',
+  port: parseInt(process.env.SMTP_PORT) || 465,
+  secure: true,
+  user: process.env.SMTP_USER || '',
+  pass: process.env.SMTP_PASS || '',
+  from: process.env.SMTP_FROM || ''
 };
 
 let _mailer = null; let _mailerCfg = '';
