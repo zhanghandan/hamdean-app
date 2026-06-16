@@ -1701,6 +1701,7 @@ function detectProvider(baseUrl) {
   const u = (baseUrl || '').toLowerCase();
   if (u.includes('anthropic.com')) return 'claude';
   if (u.includes('googleapis.com') || u.includes('generativelanguage')) return 'gemini';
+  if (u.includes('volces.com') || u.includes('ark.cn')) return 'doubao';
   return 'openai';
 }
 
@@ -1796,6 +1797,31 @@ function toGeminiTools(tools) {
   })) }];
 }
 
+
+// Doubao (Ark / Volces): OpenAI-compatible API
+async function callDoubao(apiKey, model, messages, systemPrompt, tools) {
+  const apiUrl = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+  const sysMsg = systemPrompt ? [{ role: 'system', content: systemPrompt }] : [];
+  const body = {
+    model,
+    messages: [...sysMsg, ...messages],
+    max_tokens: 8192,
+    stream: false
+  };
+  if (tools && tools.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+  const r = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(300000)
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error('Doubao ' + r.status + ': ' + e.slice(0, 300)); }
+  return r.json();
+}
+
 async function callGemini(apiKey, model, messages, systemPrompt, tools) {
   const { contents, systemInstruction } = toGeminiContents(messages, systemPrompt);
   const body = { contents };
@@ -1827,6 +1853,21 @@ function parseClaudeResponse(data) {
     }
   }
   return { content: textParts.join(''), tool_calls: toolCalls.length ? toolCalls : undefined };
+}
+
+
+// Doubao: OpenAI-compatible response parser
+function parseDoubaoResponse(data) {
+  const text = data.choices?.[0]?.message?.content || '';
+  const toolCalls = data.choices?.[0]?.message?.tool_calls || [];
+  return {
+    content: text,
+    tool_calls: toolCalls.length ? toolCalls.map(tc => ({
+      id: tc.id,
+      type: 'function',
+      function: { name: tc.function.name, arguments: tc.function.arguments }
+    })) : undefined
+  };
 }
 
 function parseGeminiResponse(data) {
@@ -2008,6 +2049,9 @@ server.post('/api/chat', async (req, res) => {
           } else if (vProvider === 'gemini') {
             const d = await callGemini(visionKey || api_key, visionModel || 'gemini-2.5-flash', visionMsgs, 'Describe this image in Chinese.', null);
             vText = parseGeminiResponse(d).content || '';
+          } else if (vProvider === 'doubao') {
+            const d = await callDoubao(visionKey || api_key, visionModel || 'doubao-seed-2-0-lite-260428', [{ role: 'system', content: 'You are an image describer. Describe images in detail in Chinese.' }, ...visionMsgs], '', null);
+            vText = parseDoubaoResponse(d).content || '';
           } else {
             const vr = await fetch((visionUrl || base_url).replace(/\/+$/, '') + '/chat/completions', {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (visionKey || api_key) },
@@ -2070,6 +2114,9 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const data = await callGemini(api_key, model, ml, ctx.systemPrompt, TOOLS);
             msg = parseGeminiResponse(data);
+          } else if (provider === 'doubao') {
+            const data = await callDoubao(api_key, model, ml, ctx.systemPrompt, TOOLS);
+            msg = parseDoubaoResponse(data);
           } else {
             const body = { model, messages: ml, stream: false, max_tokens: 8192 };
             body.tools = TOOLS; body.tool_choice = 'auto';
@@ -2212,6 +2259,9 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const d = await callGemini(api_key, model, ml, ctx.systemPrompt, null);
             finalText = parseGeminiResponse(d).content || finalText;
+          } else if (provider === 'doubao') {
+            const d = await callDoubao(api_key, model, ml, ctx.systemPrompt, null);
+            finalText = parseDoubaoResponse(d).content || finalText;
           } else {
             const fixR = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key },
               body: JSON.stringify({ model, messages: ml, stream: false, max_tokens: 8192 }),
