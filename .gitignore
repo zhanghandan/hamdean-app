@@ -3,3 +3,7 @@ dist/
 .hamdean/
 *.log
 .DS_Store
+
+# Encrypted data
+*.enc
+*.plain.bak

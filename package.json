@@ -1,6 +1,6 @@
 {
   "name": "hamdean",
-  "version": "4.0.0",
+  "version": "4.0.2",
   "description": "AI Desktop Agent",
   "author": "Hamdean",
   "main": "main.js",
@@ -17,6 +17,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "crypto-utils.js",
       "public/**/*",
       "node_modules/**/*",
       "package.json"
@@ -40,6 +41,7 @@
     "cors": "^2.8.5",
     "electron-updater": "^6.8.9",
     "express": "^4.21.0",
+    "iconv-lite": "^0.7.2",
     "nodemailer": "^8.0.11"
   },
   "devDependencies": {
