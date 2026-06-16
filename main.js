@@ -97,6 +97,18 @@ function buildSysPrompt() {
 
 **关键规则：如果你打算回复的第一句话包含"让我"、"我来"、"我帮你"、"好的"、"我先"——停，不要回复文字，直接调用工具。工具返回结果后再说话。**
 
+## 🎯 任务聚焦：只做用户要的，不自行加戏
+
+收到用户消息后，画一个明确边界：**用户要你做什么，你就只做什么。** 不是用户要求的，一件都不多做。
+
+- 用户发图片问你"这是什么"，你就调用视觉识别然后回答。不要顺便搜代码、不要改配置、不要打安装包、不要git
+- 用户要你写一个HTML文件，你就写那个文件。不要顺便优化项目结构、不要清理无关文件、不要改版本号
+- 用户问金价，你就查金价并回答。不要顺便搜其他财经数据、不要分析走势
+- **永远不要主动修改 Hamdean 自身的代码** — 那是张涵的项目，不是你的任务
+- **永远不要主动执行 npm/pip install、electron-builder、打包、构建** — 除非用户明确要求
+- **永远不要主动 git commit/push** — 除非用户明确要求
+- 如果你发现自己跑偏了 → 立刻停，只输出用户要的结果
+
 只有以下情况可以直接文字回复（无需调工具）：
 - 纯聊天/问候（"你好"、"今天心情不错"）
 - 对已有知识的简单确认（"1+1等于几"）
@@ -149,6 +161,7 @@ ${ds}（北京时间），年份 2026。
 6. **严禁无意义道歉**: 不重复道歉、不解释"为什么我错了"超过一句
 7. **严禁输出过时日期**: 今年是2026年，不要在回复中出现2025年或其他年份
 8. **严禁半途而废**: 多步骤任务必须做完所有步骤再汇总，不要做一步就停
+9. **严禁自行扩展任务**: 只做用户明确要求的事。不改Hamdean自身代码、不跑打包构建、不git操作、不升版本号——除非用户明确说要做这些
 
 ## 代码质量
 
@@ -1701,7 +1714,6 @@ function detectProvider(baseUrl) {
   const u = (baseUrl || '').toLowerCase();
   if (u.includes('anthropic.com')) return 'claude';
   if (u.includes('googleapis.com') || u.includes('generativelanguage')) return 'gemini';
-  if (u.includes('volces.com') || u.includes('ark.cn')) return 'doubao';
   return 'openai';
 }
 
@@ -1797,31 +1809,6 @@ function toGeminiTools(tools) {
   })) }];
 }
 
-
-// Doubao (Ark / Volces): OpenAI-compatible API
-async function callDoubao(apiKey, model, messages, systemPrompt, tools) {
-  const apiUrl = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
-  const sysMsg = systemPrompt ? [{ role: 'system', content: systemPrompt }] : [];
-  const body = {
-    model,
-    messages: [...sysMsg, ...messages],
-    max_tokens: 8192,
-    stream: false
-  };
-  if (tools && tools.length) {
-    body.tools = tools;
-    body.tool_choice = 'auto';
-  }
-  const r = await fetch(apiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(300000)
-  });
-  if (!r.ok) { const e = await r.text(); throw new Error('Doubao ' + r.status + ': ' + e.slice(0, 300)); }
-  return r.json();
-}
-
 async function callGemini(apiKey, model, messages, systemPrompt, tools) {
   const { contents, systemInstruction } = toGeminiContents(messages, systemPrompt);
   const body = { contents };
@@ -1853,21 +1840,6 @@ function parseClaudeResponse(data) {
     }
   }
   return { content: textParts.join(''), tool_calls: toolCalls.length ? toolCalls : undefined };
-}
-
-
-// Doubao: OpenAI-compatible response parser
-function parseDoubaoResponse(data) {
-  const text = data.choices?.[0]?.message?.content || '';
-  const toolCalls = data.choices?.[0]?.message?.tool_calls || [];
-  return {
-    content: text,
-    tool_calls: toolCalls.length ? toolCalls.map(tc => ({
-      id: tc.id,
-      type: 'function',
-      function: { name: tc.function.name, arguments: tc.function.arguments }
-    })) : undefined
-  };
 }
 
 function parseGeminiResponse(data) {
@@ -2049,9 +2021,6 @@ server.post('/api/chat', async (req, res) => {
           } else if (vProvider === 'gemini') {
             const d = await callGemini(visionKey || api_key, visionModel || 'gemini-2.5-flash', visionMsgs, 'Describe this image in Chinese.', null);
             vText = parseGeminiResponse(d).content || '';
-          } else if (vProvider === 'doubao') {
-            const d = await callDoubao(visionKey || api_key, visionModel || 'doubao-seed-2-0-lite-260428', [{ role: 'system', content: 'You are an image describer. Describe images in detail in Chinese.' }, ...visionMsgs], '', null);
-            vText = parseDoubaoResponse(d).content || '';
           } else {
             const vr = await fetch((visionUrl || base_url).replace(/\/+$/, '') + '/chat/completions', {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (visionKey || api_key) },
@@ -2114,9 +2083,6 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const data = await callGemini(api_key, model, ml, ctx.systemPrompt, TOOLS);
             msg = parseGeminiResponse(data);
-          } else if (provider === 'doubao') {
-            const data = await callDoubao(api_key, model, ml, ctx.systemPrompt, TOOLS);
-            msg = parseDoubaoResponse(data);
           } else {
             const body = { model, messages: ml, stream: false, max_tokens: 8192 };
             body.tools = TOOLS; body.tool_choice = 'auto';
@@ -2259,9 +2225,6 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const d = await callGemini(api_key, model, ml, ctx.systemPrompt, null);
             finalText = parseGeminiResponse(d).content || finalText;
-          } else if (provider === 'doubao') {
-            const d = await callDoubao(api_key, model, ml, ctx.systemPrompt, null);
-            finalText = parseDoubaoResponse(d).content || finalText;
           } else {
             const fixR = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key },
               body: JSON.stringify({ model, messages: ml, stream: false, max_tokens: 8192 }),
