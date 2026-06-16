@@ -99,7 +99,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--tx);height:100vh;d
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);z-index:200;display:none;align-items:center;justify-content:center}
 .modal{background:var(--srf);border:1px solid var(--bd);border-radius:14px;width:92%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
 .modal-head{padding:16px 18px 10px;display:flex;align-items:center;justify-content:space-between}
-.modal-title{font-size:14px;font-weight:650}
+.modal-title{font-size:14px;font-weight:700}
 .modal-close{width:24px;height:24px;border-radius:6px;border:none;background:transparent;cursor:pointer;font-size:12px;color:var(--t3)}
 .modal-body{padding:0 18px 14px;display:flex;flex-direction:column;gap:10px}
 .field{display:flex;flex-direction:column;gap:3px}
@@ -187,6 +187,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--tx);height:100vh;d
   
 <div class="model-bar">
     <button class="model-tag" id="modelTag"><span class="mdot"></span> No model</button>
+    <span id="memberBadge" style="font-size:9px;color:#f0a346;padding:2px 6px;border:1px solid #f0a34633;border-radius:4px;display:none;"></span>
     <span style="flex:1"></span><button class="mode-tag" id="alTag" onclick="toggleLearnPanel()" style="font-size:10px;">Learn</button>
     <span style="width:6px"></span>
     <button class="mode-tag" id="nnTag" onclick="openNN()" style="font-size:10px;" title="Open 3D Neural Network">NN</button>
@@ -283,7 +284,7 @@ let chats=ld(C)||[];
 chats=chats.map(c=>{c.msgs=c.msgs.filter(m=>!m.content.includes('张涵'));c._sending=false;c._ac=null;return c}).filter(c=>c.msgs.length>0||c.title!=='New Chat');
 if(chats.length===0){chats=[]}sv(C,chats)
 let cid=null,editId=null;
-let loginMode='login',loginPolling=null;
+let loginMode='login';
 function ak(){return keys.find(k=>k.id===aid)||null}
 function cc(){return chats.find(c=>c.id===cid)||chats[0]}
 function initApp(){
@@ -308,6 +309,15 @@ function showLogin(){
   document.getElementById('loginRegView').style.display='none';
   document.getElementById('loginVerifyView').style.display='none';
   document.getElementById('loginError').textContent='';
+  // Auto-fill saved email + quick-unlock hint
+  const savedEmail = ld('he');
+  const savedPw = ld('hpw');
+  if (savedEmail) {
+    document.getElementById('loginEmail').value = savedEmail;
+    document.getElementById('loginPw').value = '';
+    document.getElementById('loginPw').placeholder = savedPw ? '密码后6位解锁' : 'Password';
+    document.getElementById('loginPw').setAttribute('maxlength', savedPw ? '6' : '');
+  }
   document.getElementById('loginEmail').focus();
 }
 function hideLogin(){
@@ -331,9 +341,15 @@ async function checkSession(){
   sv(U,null);sv(T,null);showLogin();
 }
 async function doLogin(){
-  const email=document.getElementById('loginEmail').value.trim();
-  const pw=document.getElementById('loginPw').value;
+  let email=document.getElementById('loginEmail').value.trim();
+  let pw=document.getElementById('loginPw').value;
   if(!email||!pw)return loginError(_t('fillAll'));
+  // Quick unlock: if user typed 6 chars and we have saved password, check last 6
+  const savedPw = ld('hpw');
+  if (pw.length === 6 && savedPw && email === ld('he')) {
+    if (savedPw.slice(-6) !== pw) return loginError('密码后6位不匹配');
+    pw = savedPw; // use full password
+  }
   try{
     const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pw})});
     const d=await r.json();
@@ -341,8 +357,12 @@ async function doLogin(){
       if(d.needVerify){verifyEmail=d.email;showVerifyScreen(d);return;}
       return loginError(d.error||_t('loginFailed'));
     }
-    sv(U,d.user);sv(T,d.token);hideLogin();loadMembership();
-    document.getElementById('loginEmail').value='';document.getElementById('loginPw').value='';
+    sv(U,d.user);sv(T,d.token);
+    // Remember credentials for next quick login
+    sv('he', email);
+    sv('hpw', pw);
+    hideLogin();loadMembership();
+    document.getElementById('loginPw').value='';
     document.getElementById('loginError').textContent='';
   }catch(e){loginError(e.message)}
 }
@@ -523,7 +543,7 @@ async function stopAutoLearn() {
 }
 
 function pollActivity() {
-  if (activityPolling) clearInterval(activityPolling);
+  if (activityPolling) return; // already polling
   const t = ld(T); if (!t) return;
   activityPolling = setInterval(async () => {
     try {
@@ -536,7 +556,6 @@ function pollActivity() {
       document.getElementById('alStop').style.display = d.running ? 'inline-block' : 'none';
     } catch(e) {}
   }, 3000);
-  setTimeout(() => { if (activityPolling) pollActivity(); }, 3000);
 }
 
 function renderActivity(activities) {
@@ -621,7 +640,7 @@ async function send(forceStop){
   $ms.appendChild(msgEl(um));$ms.appendChild(msgEl(am));scrollB();rChats();removeImage();
   let sel=document.createElement('div');sel.className='status';sel.id='toolStatus';sel.innerHTML='<span class="status-dot"></span> 分析中...';$ms.appendChild(sel);scrollB();
   c._sending=true;c._ac=new AbortController();updateSendBtn();
-  let myChatId=c.id, toolCount=0, autoRound=0;
+  let toolCount=0, autoRound=0;
   try{
     let apiMs=c.msgs.filter(m=>!m.streaming).map(m=>({role:m.role,content:m.content}));
     let resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:a.baseUrl,api_key:a.apiKey,model:a.model,messages:apiMs,system_prompt:sp||undefined,stream:true}),signal:c._ac.signal});

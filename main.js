@@ -256,6 +256,7 @@ function loadMemories() {
 }
 
 function findRelevantMemories(query) {
+  if (typeof query !== "string") return [];
   const keywords = query.toLowerCase().split(/[\s,，。！？]+/).filter(w => w.length > 1);
   const all = loadMemories();
   if (!keywords.length) return all.slice(0, 5);
@@ -358,7 +359,16 @@ const EXEC_WHITELIST_DIRS = [
   'C:/Users/Administrator/claude-dispatcher',
   'C:/Users/Administrator/ai-chat',
 ];
-const EXEC_BLOCKED = ['format', 'del /f', 'rm -rf', 'shutdown', 'restart', 'logoff', ':(){', '> /dev/sda'];
+const EXEC_BLOCKED = [
+  'format', 'del /f', 'rm -rf', 'shutdown', 'restart', 'logoff', ':(){', '> /dev/sda',
+  // 禁止 AI 读/改 Hamdean 自身源码
+  'hamdean2\\main.js', 'hamdean2\\auth-server', 'hamdean2\\public', 'hamdean2\\package.json',
+  'Select-String.*hamdean', 'Get-Content.*hamdean',
+  // 禁止未经允许的打包构建
+  'electron-builder', 'npm pack', 'npx build',
+  // 禁止未经允许的 git 操作
+  'git.*commit.*hamdean', 'git.*push.*hamdean'
+];
 
 server.post('/api/exec', (req, res) => {
   const { command, cwd, timeout } = req.body;
@@ -368,9 +378,16 @@ server.post('/api/exec', (req, res) => {
 
   const lower = command.toLowerCase();
   for (const blocked of EXEC_BLOCKED) {
-    if (lower.includes(blocked.toLowerCase())) {
-      return res.status(403).json({ ok: false, error: `命令被阻止: ${blocked}` });
+    const bl = blocked.toLowerCase();
+    if (bl.includes('*') || bl.includes('.')) {
+      try { if (new RegExp(bl, 'i').test(command)) return res.status(403).json({ ok: false, error: `命令被阻止: ${blocked}` }); } catch {}
+    } else {
+      if (lower.includes(bl)) return res.status(403).json({ ok: false, error: `命令被阻止: ${blocked}` });
     }
+  }
+  // BLANKET BAN: any exec command referencing hamdean2 is blocked
+  if (lower.includes('hamdean2')) {
+    return res.status(403).json({ ok: false, error: '命令被阻止: 禁止操作Hamdean。只关注用户的任务，不要修系统。' });
   }
 
   const workDir = cwd || HOME;
@@ -459,26 +476,6 @@ function buildContext(userQuery, toolResult, conversationHistory) {
 }
 
 // ===== Response Verifier =====
-function verifyResponse(aiText, toolResult) {
-  if (!toolResult) return null;
-
-  const apiPriceMatch = toolResult.match(/人民币金价\s*([\d.]+)\s*元\/克/);
-  if (apiPriceMatch) {
-    const realPrice = parseFloat(apiPriceMatch[1]);
-    const aiPrices = aiText.match(/(\d{2,4}(?:\.\d{1,2})?)\s*(?:元|块)\s*[\/每]?\s*(?:克|g)/g);
-    if (aiPrices) {
-      for (const p of aiPrices) {
-        const num = parseFloat(p.match(/\d+(?:\.\d+)?/)[0]);
-        if (Math.abs(num - realPrice) / realPrice > 0.05 && num > 100) {
-          console.log('[verify] WARNING: AI said', num, 'but real price is', realPrice);
-          return { conflict: true, realPrice, aiPrice: num, note: 'AI使用了训练数据中的价格而非API数据' };
-        }
-      }
-    }
-  }
-  return null;
-}
-
 // ===== JSON Helpers =====
 function loadJSON(fp) {
   try {
@@ -500,32 +497,6 @@ function saveJSON(fp, obj) {
   fs.writeFileSync(fp, json);
 }
 
-// ===== Auth State =====
-let userStore = loadJSON(USERS_FILE);
-let sessionStore = loadJSON(SESSIONS_FILE);
-if (!userStore.users) userStore.users = [];
-if (!sessionStore.sessions) sessionStore.sessions = [];
-
-function hashPassword(pw) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.pbkdf2Sync(pw, salt, 100000, 64, 'sha512').toString('hex');
-  return { salt, hash };
-}
-function verifyPassword(pw, salt, hash) {
-  return crypto.pbkdf2Sync(pw, salt, 100000, 64, 'sha512').toString('hex') === hash;
-}
-function newToken() { return crypto.randomBytes(32).toString('hex'); }
-function findSession(token) {
-  const s = sessionStore.sessions.find(s => s.token === token);
-  if (!s) return null;
-  if (Date.now() > s.expiresAt) {
-    sessionStore.sessions = sessionStore.sessions.filter(x => x.token !== token);
-    saveJSON(SESSIONS_FILE, sessionStore);
-    return null;
-  }
-  return s;
-}
-function findUser(id) { return userStore.users.find(u => u.id === id); }
 async function validateSessionViaECS(token) {
   if (!token) return null;
   try {
@@ -542,366 +513,6 @@ async function validateSessionViaECS(token) {
     return null;
   }
 }
-
-// ===== SMTP Config =====
-let appConfig = loadJSON(CONFIG_FILE);
-if (!appConfig.smtp) appConfig.smtp = {
-  host: process.env.SMTP_HOST || '',
-  port: parseInt(process.env.SMTP_PORT) || 465,
-  secure: true,
-  user: process.env.SMTP_USER || '',
-  pass: process.env.SMTP_PASS || '',
-  from: process.env.SMTP_FROM || ''
-};
-
-function getMailer() {
-  if (!appConfig.smtp.host || !appConfig.smtp.user) return null;
-  // Create fresh transporter — avoids stale connection issues
-  return nodemailer.createTransport({
-    host: appConfig.smtp.host,
-    port: appConfig.smtp.port,
-    secure: appConfig.smtp.port === 465,
-    auth: { user: appConfig.smtp.user, pass: appConfig.smtp.pass },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-    pool: false
-  });
-}
-
-// ===== Verification Codes =====
-const verifyCodes = new Map();
-function genCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
-function cleanCodes() {
-  for (const [k, v] of verifyCodes) { if (Date.now() > v.expires) verifyCodes.delete(k); }
-}
-
-// ===== Rate Limiting & Brute Force Protection =====
-const rateLimit = new Map();
-const lockouts = new Map();
-
-function getIP(req) { return req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1'; }
-
-function checkRate(key, maxAttempts = 10, windowMs = 60000) {
-  const now = Date.now();
-  let entry = rateLimit.get(key);
-  if (!entry || now > entry.resetAt) { entry = { count: 0, resetAt: now + windowMs }; rateLimit.set(key, entry); }
-  entry.count++;
-  if (entry.count > maxAttempts) return false;
-  return true;
-}
-
-function checkLockout(email) {
-  const entry = lockouts.get(email);
-  if (!entry) return null;
-  if (Date.now() > entry.lockUntil) { lockouts.delete(email); return null; }
-  const mins = Math.ceil((entry.lockUntil - Date.now()) / 60000);
-  return `账户已锁定。请在 ${mins} 分钟后重试。`;
-}
-
-function recordFailure(email) {
-  let entry = lockouts.get(email);
-  if (!entry || Date.now() > entry.lockUntil) { entry = { failures: 0, lockUntil: 0 }; }
-  entry.failures++;
-  if (entry.failures >= 5) { entry.lockUntil = Date.now() + 15 * 60000; }
-  else if (entry.failures >= 3) { entry.lockUntil = Date.now() + 60000; }
-  lockouts.set(email, entry);
-}
-
-function clearLockout(email) { lockouts.delete(email); }
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of rateLimit) { if (now > v.resetAt) rateLimit.delete(k); }
-  for (const [k, v] of lockouts) { if (now > v.lockUntil + 3600000) lockouts.delete(k); }
-  cleanCodes();
-}, 600000);
-
-// ===== Auth Routes =====
-server.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email format' });
-    const ip = getIP(req);
-    if (!checkRate('reg_ip_' + ip, 5, 300000)) return res.status(429).json({ error: '注册过于频繁，请稍后再试。' });
-    const existing = userStore.users.find(u => u.email === email);
-    if (existing) {
-      if (existing.verified) return res.status(409).json({ error: '该邮箱已注册' });
-      userStore.users = userStore.users.filter(u => u.id !== existing.id);
-      saveJSON(USERS_FILE, userStore);
-    }
-    const { salt, hash } = hashPassword(password);
-    const user = {
-      id: 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      email, passwordHash: hash, salt, createdAt: Date.now(), verified: false,
-      membership: 'trial', trialUntil: Date.now() + 3 * 24 * 3600 * 1000, memberUntil: 0
-    };
-    userStore.users.push(user);
-    saveJSON(USERS_FILE, userStore);
-    const code = genCode();
-    cleanCodes();
-    verifyCodes.set(email, { code, expires: Date.now() + 5 * 60 * 1000, attempts: 0 });
-    // Return immediately, send email in background
-    res.json({ ok: true, needVerify: true, email, message: '验证码已发送至 ' + email });
-    // Fire and forget — dont block the user
-    const mailer = getMailer();
-    if (mailer) {
-      mailer.sendMail({
-        from: appConfig.smtp.from || appConfig.smtp.user,
-        to: email,
-        subject: 'Hamdean — 验证码',
-        text: 'Your code: ' + code + ' (expires in 5 min)',
-        html: '<h2>Hamdean</h2><h1>' + code + '</h1><p>5分钟内有效。</p>'
-      }).then(() => console.log('[SMTP] Sent to', email))
-        .catch(e => console.error('[SMTP] Failed:', e.message));
-    }
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.get('/api/auth/smtp-status', (req, res) => {
-  const configured = !!(appConfig.smtp.host && appConfig.smtp.user);
-  res.json({ configured, host: appConfig.smtp.host, user: appConfig.smtp.user, from: appConfig.smtp.from });
-});
-
-server.post('/api/auth/smtp-config', (req, res) => {
-  try {
-    const { host, port, user, pass, from } = req.body;
-    if (host) appConfig.smtp.host = host;
-    if (port) appConfig.smtp.port = port;
-    if (user) appConfig.smtp.user = user;
-    if (pass) appConfig.smtp.pass = pass;
-    if (from) appConfig.smtp.from = from;
-    saveJSON(CONFIG_FILE, appConfig);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ===== Membership & Activation =====
-const ACTIVATION_CODES_FILE = path.join(DATA_DIR, 'activation_codes.json');
-let activationCodes = loadJSON(ACTIVATION_CODES_FILE);
-if (!activationCodes.codes) activationCodes.codes = {};
-
-function checkMembership(user) {
-  if (!user) return { active: false, tier: 'free', reason: 'No user' };
-  const now = Date.now();
-  if (user.memberUntil > now) return { active: true, tier: 'pro', expiresAt: user.memberUntil };
-  if (user.trialUntil > now) return { active: true, tier: 'trial', expiresAt: user.trialUntil };
-  return { active: false, tier: 'free', reason: user.trialUntil ? '试用已过期，请升级到 Pro。' : '无会员。' };
-}
-
-server.post('/api/auth/generate-codes', (req, res) => {
-  try {
-    const { count = 1, masterKey } = req.body;
-    if (masterKey !== 'hamdean-admin-2024') return res.status(403).json({ error: 'Unauthorized' });
-    const codes = [];
-    for (let i = 0; i < count; i++) {
-      const code = 'HD-' + crypto.randomBytes(6).toString('hex').toUpperCase();
-      activationCodes.codes[code] = { used: false, createdAt: Date.now() };
-      codes.push(code);
-    }
-    saveJSON(ACTIVATION_CODES_FILE, activationCodes);
-    res.json({ ok: true, codes });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/activate', (req, res) => {
-  try {
-    const { email, code } = req.body;
-    if (!email || !code) return res.status(400).json({ error: 'Email and activation code required' });
-    const ac = activationCodes.codes[code.toUpperCase()];
-    if (!ac) return res.status(400).json({ error: '无效的激活码' });
-    if (ac.used) return res.status(400).json({ error: '激活码已被使用' });
-    const user = userStore.users.find(u => u.email === email);
-    if (!user) return res.status(404).json({ error: '用户未找到' });
-    ac.used = true; ac.usedBy = email; ac.usedAt = Date.now();
-    user.membership = 'pro';
-    user.memberUntil = Math.max(user.memberUntil, Date.now()) + 30 * 24 * 3600 * 1000;
-    saveJSON(ACTIVATION_CODES_FILE, activationCodes);
-    saveJSON(USERS_FILE, userStore);
-    res.json({ ok: true, memberUntil: user.memberUntil });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.get('/api/auth/membership', (req, res) => {
-  try {
-    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
-    if (!token) return res.status(400).json({ error: 'Token required' });
-    const sess = findSession(token);
-    if (!sess) return res.status(401).json({ error: 'Invalid session' });
-    const user = findUser(sess.userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    const ms = checkMembership(user);
-    res.json({ ok: true, membership: ms, email: user.email, trialUntil: user.trialUntil, memberUntil: user.memberUntil });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/resend-code', async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email required' });
-    if (!checkRate('resend_' + email, 3, 300000)) return res.status(429).json({ error: '请求过于频繁，请 5 分钟后再试。' });
-    const user = userStore.users.find(u => u.email === email);
-    if (!user) return res.status(404).json({ error: '该邮箱未注册' });
-    if (user.verified) return res.status(400).json({ error: '邮箱已验证，请登录。' });
-    const code = genCode();
-    cleanCodes();
-    verifyCodes.set(email, { code, expires: Date.now() + 5 * 60 * 1000, attempts: 0 });
-    // Return immediately, send in background
-    res.json({ ok: true, message: '验证码已重新发送至 ' + email });
-    const mailer = getMailer();
-    if (mailer) {
-      mailer.sendMail({
-        from: appConfig.smtp.from || appConfig.smtp.user,
-        to: email,
-        subject: 'Hamdean — 邮箱验证码',
-        text: '你的验证码是: ' + code + '\n\n5分钟内有效。\n\n— Hamdean',
-        html: '<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:20px;"><h2 style="color:#f0a346;">Hamdean</h2><p>你的验证码:</p><h1 style="letter-spacing:8px;color:#333;">' + code + '</h1><p style="color:#888;font-size:12px;">5分钟内有效。</p></div>'
-      }).then(() => console.log('[SMTP] Resent to', email))
-        .catch(e => console.error('[SMTP] Resend failed:', e.message));
-    }
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/verify-email', (req, res) => {
-  try {
-    const { email, code } = req.body;
-    if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
-    if (!checkRate('verify_' + email, 10, 300000)) return res.status(429).json({ error: '尝试次数过多，请稍后再试。' });
-    cleanCodes();
-    const vc = verifyCodes.get(email);
-    if (!vc) return res.status(400).json({ error: '验证码未找到或已过期，请重新注册。' });
-    if (vc.attempts >= 5) { verifyCodes.delete(email); return res.status(429).json({ error: '尝试次数过多，请重新注册。' }); }
-    vc.attempts++;
-    if (vc.code !== code) return res.status(400).json({ error: '验证码错误，剩余 ' + (5 - vc.attempts) + ' 次尝试。' });
-    verifyCodes.delete(email);
-    const user = userStore.users.find(u => u.email === email);
-    if (!user) return res.status(404).json({ error: '用户未找到' });
-    user.verified = true;
-    saveJSON(USERS_FILE, userStore);
-    const token = newToken();
-    sessionStore.sessions.push({ token, userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + 30 * 24 * 3600 * 1000 });
-    saveJSON(SESSIONS_FILE, sessionStore);
-    const ms = checkMembership(user);
-    res.json({ ok: true, user: { id: user.id, email: user.email, membership: ms }, token });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/login', (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    const ip = getIP(req);
-    if (!checkRate('login_ip_' + ip, 20, 60000)) return res.status(429).json({ error: '请求过于频繁，请稍后再试。' });
-    const lockMsg = checkLockout(email);
-    if (lockMsg) return res.status(423).json({ error: lockMsg });
-    if (!checkRate('login_em_' + email, 10, 60000)) return res.status(429).json({ error: '尝试次数过多，请稍后再试。' });
-    const user = userStore.users.find(u => u.email === email);
-    if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
-      recordFailure(email);
-      return res.status(401).json({ error: '邮箱或密码错误' });
-    }
-    clearLockout(email);
-    if (!user.verified) return res.status(403).json({ error: '邮箱未验证', needVerify: true, email: user.email });
-    const token = newToken();
-    sessionStore.sessions = sessionStore.sessions.filter(s => s.userId !== user.id);
-    sessionStore.sessions.push({ token, userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + 30 * 24 * 3600 * 1000 });
-    saveJSON(SESSIONS_FILE, sessionStore);
-    const ms = checkMembership(user);
-    res.json({ ok: true, user: { id: user.id, email: user.email, membership: ms }, token });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/session', (req, res) => {
-  try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: 'Token required' });
-    const sess = findSession(token);
-    if (!sess) return res.status(401).json({ ok: false, error: 'Invalid or expired session' });
-    const user = findUser(sess.userId);
-    if (!user) return res.status(401).json({ ok: false, error: 'User not found' });
-    res.json({ ok: true, user: { id: user.id, email: user.email } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.post('/api/auth/logout', (req, res) => {
-  try {
-    const { token } = req.body;
-    if (token) {
-      sessionStore.sessions = sessionStore.sessions.filter(s => s.token !== token);
-      saveJSON(SESSIONS_FILE, sessionStore);
-    }
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ===== Google OAuth =====
-const oauthStates = new Map();
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const GOOGLE_REDIRECT = `http://localhost:${PORT}/api/auth/google-callback`;
-
-server.get('/api/auth/google-url', (req, res) => {
-  try {
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.json({ url: null, error: 'Google OAuth not configured.' });
-    const state = crypto.randomBytes(16).toString('hex');
-    oauthStates.set(state, { provider: 'google', createdAt: Date.now() });
-    const url = 'https://accounts.google.com/o/oauth2/v2/auth?' +
-      'client_id=' + encodeURIComponent(GOOGLE_CLIENT_ID) +
-      '&redirect_uri=' + encodeURIComponent(GOOGLE_REDIRECT) +
-      '&response_type=code&scope=openid%20email%20profile&state=' + state +
-      '&access_type=offline&prompt=consent';
-    res.json({ url, state });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-server.get('/api/auth/google-callback', async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    if (!code || !state || !oauthStates.has(state)) {
-      return res.status(400).send('<html><body style="background:#0f0f13;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center;"><h3 style="color:#ef4444;">登录失败</h3><p>无效请求</p></div></body></html>');
-    }
-    oauthStates.delete(state);
-    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'code=' + encodeURIComponent(code) + '&client_id=' + encodeURIComponent(GOOGLE_CLIENT_ID) + '&client_secret=' + encodeURIComponent(GOOGLE_CLIENT_SECRET) + '&redirect_uri=' + encodeURIComponent(GOOGLE_REDIRECT) + '&grant_type=authorization_code'
-    });
-    const tokenData = await tokenRes.json();
-    if (!tokenData.id_token) throw new Error('No id_token');
-    const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString());
-    const email = payload.email;
-    let user = userStore.users.find(u => u.email === email);
-    if (!user) {
-      user = { id: 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), email, provider: 'google', createdAt: Date.now() };
-      userStore.users.push(user);
-      saveJSON(USERS_FILE, userStore);
-    }
-    const token = newToken();
-    sessionStore.sessions = sessionStore.sessions.filter(s => s.userId !== user.id);
-    sessionStore.sessions.push({ token, userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + 30 * 24 * 3600 * 1000 });
-    saveJSON(SESSIONS_FILE, sessionStore);
-    oauthStates.set(state + '_result', { token, user: { id: user.id, email: user.email } });
-    res.send('<html><body style="background:#0f0f13;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center;"><h3 style="color:#22c55e;">登录成功！</h3><p>返回 Hamdean</p><p style="color:#888;font-size:12px;">可以关闭此窗口</p></div></body></html>');
-  } catch (err) {
-    res.status(500).send('<html><body style="background:#0f0f13;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center;"><h3 style="color:#ef4444;">登录失败</h3><p>' + err.message + '</p></div></body></html>');
-  }
-});
-
-server.get('/api/auth/pending-oauth', (req, res) => {
-  try {
-    const { state } = req.query;
-    if (!state) return res.status(400).json({ error: 'State required' });
-    const result = oauthStates.get(state + '_result');
-    if (result) {
-      oauthStates.delete(state + '_result');
-      return res.json({ ready: true, token: result.token, user: result.user });
-    }
-    if (oauthStates.has(state)) return res.json({ ready: false });
-    res.json({ ready: false, error: 'Unknown state' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
 
 // ===== Fast File Search =====
 function fSearch(kw, dirs) {
@@ -1374,12 +985,6 @@ server.post('/api/skills/toggle/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-function getActiveSkillsContext() {
-  const active = skillsStore.skills.filter(s => s.enabled);
-  if (!active.length) return '';
-  return '\n\n[启用的技能]\n' + active.map(s => `【${s.name}】${s.prompt}`).join('\n');
-}
-
 // ===== Intent Detection =====
 async function detectIntent(text) {
   const t = text.toLowerCase();
@@ -1626,6 +1231,10 @@ async function executeTool(name, args) {
     case 'read_file': {
       const fp = args.path || '';
       const resolved = fp.includes(':') ? fp : path.join(HOME, fp);
+      // Block reading Hamdean's own source code
+      if (resolved.toLowerCase().includes('hamdean2') && (resolved.endsWith('.js') || resolved.endsWith('.json') || resolved.endsWith('.html'))) {
+        return '拒绝: 不能读取Hamdean自身源码文件。只关注用户的任务。';
+      }
       try {
         if (!fs.existsSync(resolved)) return '文件不存在: ' + resolved;
         return fs.readFileSync(resolved, 'utf-8').slice(0, 10000);
@@ -1634,10 +1243,15 @@ async function executeTool(name, args) {
     case 'write_file': {
       const fp = args.path || '';
       const resolved = fp.includes(':') ? fp : path.join(DESKTOP, fp);
+      // Block writing script files that could bypass restrictions
+      if (/\.(bat|ps1|cmd|sh|vbs|reg)$/i.test(resolved)) return '拒绝: 不能创建脚本文件';
+      // Block writing files that reference Hamdean internals
+      const content = args.content || '';
+      if (content.includes('hamdean2') || content.includes('hamdean\\main.js') || content.includes('hamdean\\\\main.js')) return '拒绝: 文件内容涉Hamdean源码操作';
       try {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
-        fs.writeFileSync(resolved, args.content || '', 'utf-8');
-        return '写入成功: ' + resolved + ' (' + (args.content || '').length + ' 字符)';
+        fs.writeFileSync(resolved, content, 'utf-8');
+        return '写入成功: ' + resolved + ' (' + content.length + ' 字符)';
       } catch (e) { return '写入失败: ' + e.message; }
     }
     case 'list_directory': {
@@ -1650,8 +1264,10 @@ async function executeTool(name, args) {
       } catch (e) { return '列出失败: ' + e.message; }
     }
     case 'search_files': {
+      const dir = args.directory || HOME;
+      if (dir.toLowerCase().includes('hamdean2')) return '拒绝: 不能在Hamdean源码目录搜索。只关注用户的任务。';
       try {
-        const results = fSearch(args.keyword || '', [args.directory || HOME]);
+        const results = fSearch(args.keyword || '', [dir]);
         return JSON.stringify(results.slice(0, 30));
       } catch (e) { return '搜索失败: ' + e.message; }
     }
@@ -1668,6 +1284,7 @@ async function executeTool(name, args) {
     }
     case 'git_operation': {
       const repo = args.repo_path || HOME;
+      if (repo.toLowerCase().includes('hamdean2')) return '拒绝: 不能操作Hamdean仓库。只关注用户的任务。';
       const op = args.operation || 'status';
       const cmd = `git -C "${repo}" ${op === 'status' ? 'status --short' : op === 'diff' ? 'diff --stat' : op === 'log' ? 'log --oneline -20' : 'branch'}`;
       try {
@@ -1714,6 +1331,7 @@ function detectProvider(baseUrl) {
   const u = (baseUrl || '').toLowerCase();
   if (u.includes('anthropic.com')) return 'claude';
   if (u.includes('googleapis.com') || u.includes('generativelanguage')) return 'gemini';
+  if (u.includes('volces.com') || u.includes('ark.cn')) return 'doubao';
   return 'openai';
 }
 
@@ -1809,6 +1427,31 @@ function toGeminiTools(tools) {
   })) }];
 }
 
+
+// Doubao (Ark / Volces): OpenAI-compatible API
+async function callDoubao(apiKey, model, messages, systemPrompt, tools) {
+  const apiUrl = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+  const sysMsg = systemPrompt ? [{ role: 'system', content: systemPrompt }] : [];
+  const body = {
+    model,
+    messages: [...sysMsg, ...messages],
+    max_tokens: 8192,
+    stream: false
+  };
+  if (tools && tools.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+  const r = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(300000)
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error('Doubao ' + r.status + ': ' + e.slice(0, 300)); }
+  return r.json();
+}
+
 async function callGemini(apiKey, model, messages, systemPrompt, tools) {
   const { contents, systemInstruction } = toGeminiContents(messages, systemPrompt);
   const body = { contents };
@@ -1840,6 +1483,21 @@ function parseClaudeResponse(data) {
     }
   }
   return { content: textParts.join(''), tool_calls: toolCalls.length ? toolCalls : undefined };
+}
+
+
+// Doubao: OpenAI-compatible response parser
+function parseDoubaoResponse(data) {
+  const text = data.choices?.[0]?.message?.content || '';
+  const toolCalls = data.choices?.[0]?.message?.tool_calls || [];
+  return {
+    content: text,
+    tool_calls: toolCalls.length ? toolCalls.map(tc => ({
+      id: tc.id,
+      type: 'function',
+      function: { name: tc.function.name, arguments: tc.function.arguments }
+    })) : undefined
+  };
 }
 
 function parseGeminiResponse(data) {
@@ -1993,38 +1651,51 @@ server.post('/api/chat', async (req, res) => {
     const apiUrl = base_url.replace(/\/+$/, '') + '/chat/completions';
 
     const lu = [...messages].reverse().find(m => m.role === 'user');
-    const userQuery = lu ? lu.content : '';
+    let userQuery = '';
+    if (lu) {
+      if (Array.isArray(lu.content)) {
+        userQuery = lu.content.filter(p => p.type === 'text' || p.type === 'input_text').map(p => p.text).join(' ');
+      } else {
+        userQuery = typeof lu.content === 'string' ? lu.content : '';
+      }
+    }
 
     const ctx = buildContext(userQuery, null, messages);
 
     // Vision Router: if image attached but model doesn't support vision
-    const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'));
+    const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url' || p.type === 'input_image'));
     let visionDescription = '';
     if (hasImage) {
       const visionModel = req.body.vision_model || '';
       const visionKey = req.body.vision_key || api_key;
       const visionUrl = req.body.vision_url || base_url;
 
-      if (visionModel || model.includes('gpt-4o') || model.includes('claude') || model.includes('gemini') || model.includes('vision') || model.includes('vl')) {
+      // Auto-pick a vision-capable model if current model doesn't support vision
+      const visionCapable = model.includes('gpt-4o') || model.includes('claude') || model.includes('gemini') || model.includes('vision') || model.includes('vl') || model.includes('doubao');
+      const useVisionModel = visionModel || (!visionCapable ? 'doubao-seed-2-0-lite-260428' : '');
+      const useVisionUrl = req.body.vision_url || (!visionCapable ? 'https://ark.cn-beijing.volces.com/api/v3' : base_url);
+      const useVisionKey = req.body.vision_key || (!visionCapable ? (process.env.DOUBAO_API_KEY || api_key) : api_key);
+
+      if (useVisionModel) {
         try {
-          console.log('[vision] Analyzing image with model:', visionModel || model);
+          console.log('[vision] Analyzing image with model:', useVisionModel || model);
           const visionMsgs = messages.filter(m => Array.isArray(m.content)).map(m => ({
             role: 'user',
-            content: [{ type: 'text', text: '请详细描述这张图片的内容。如果包含文字，逐字抄录。如果包含界面，描述布局和元素。如果包含代码/报错，抄录完整内容。只输出描述，不要给建议或回答。' }, ...m.content.filter(p => p.type === 'image_url')]
+            content: [{ type: 'text', text: '请详细描述这张图片的内容。如果包含文字，逐字抄录。如果包含界面，描述布局和元素。如果包含代码/报错，抄录完整内容。只输出描述，不要给建议或回答。' }, ...m.content.filter(p => p.type === 'image_url' || p.type === 'input_image')]
           }));
 
-          const vProvider = detectProvider(visionUrl || base_url);
+          const vProvider = detectProvider(useVisionUrl || base_url);
           let vText = '';
           if (vProvider === 'claude') {
-            const d = await callClaude(visionKey || api_key, visionModel || 'claude-sonnet-4-6', [{ role: 'system', content: 'You are an image describer. Describe images in detail in Chinese.' }, ...visionMsgs], '', null);
+            const d = await callClaude(useVisionKey || api_key, useVisionModel || 'claude-sonnet-4-6', [{ role: 'system', content: 'You are an image describer. Describe images in detail in Chinese.' }, ...visionMsgs], '', null);
             vText = parseClaudeResponse(d).content || '';
           } else if (vProvider === 'gemini') {
-            const d = await callGemini(visionKey || api_key, visionModel || 'gemini-2.5-flash', visionMsgs, 'Describe this image in Chinese.', null);
+            const d = await callGemini(useVisionKey || api_key, useVisionModel || 'gemini-2.5-flash', visionMsgs, 'Describe this image in Chinese.', null);
             vText = parseGeminiResponse(d).content || '';
           } else {
-            const vr = await fetch((visionUrl || base_url).replace(/\/+$/, '') + '/chat/completions', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (visionKey || api_key) },
-              body: JSON.stringify({ model: visionModel || 'gpt-4o', messages: visionMsgs, stream: false, max_tokens: 1024 }),
+            const vr = await fetch((useVisionUrl || base_url).replace(/\/+$/, '') + '/chat/completions', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (useVisionKey || api_key) },
+              body: JSON.stringify({ model: useVisionModel || 'gpt-4o', messages: visionMsgs, stream: false, max_tokens: 1024 }),
               signal: AbortSignal.timeout(60000)
             });
             if (vr.ok) { const vj = await vr.json(); vText = vj.choices?.[0]?.message?.content || ''; }
@@ -2035,6 +1706,19 @@ server.post('/api/chat', async (req, res) => {
           }
         } catch (e) { console.log('[vision] Failed:', e.message); }
       }
+
+      // FAST PATH: if user sent an image, return vision result directly — no agentic loop
+      if (visionDescription) {
+        console.log('[vision] Fast path: returning description directly');
+        const reply = '图片内容：' + visionDescription;
+        if (useSSE) {
+          sse({ type: 'done', content: reply, tools: [] });
+          res.end();
+        } else {
+          res.json({ content: reply, tools: [] });
+        }
+        return;
+      }
     }
 
     // Normalize messages, replacing images with vision description
@@ -2043,8 +1727,8 @@ server.post('/api/chat', async (req, res) => {
         let text = '';
         let hasImg = false;
         for (const p of m.content) {
-          if (p.type === 'text') text += p.text + ' ';
-          else if (p.type === 'image_url') hasImg = true;
+          if (p.type === 'text' || p.type === 'input_text') text += (p.text || '') + ' ';
+          else if (p.type === 'image_url' || p.type === 'input_image') hasImg = true;
         }
         if (hasImg && visionDescription) {
           return { role: m.role, content: text.trim() + '\n\n[图片描述: ' + visionDescription + ']' };
@@ -2083,6 +1767,9 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const data = await callGemini(api_key, model, ml, ctx.systemPrompt, TOOLS);
             msg = parseGeminiResponse(data);
+          } else if (provider === 'doubao') {
+            const data = await callDoubao(api_key, model, ml, ctx.systemPrompt, TOOLS);
+            msg = parseDoubaoResponse(data);
           } else {
             const body = { model, messages: ml, stream: false, max_tokens: 8192 };
             body.tools = TOOLS; body.tool_choice = 'auto';
@@ -2225,6 +1912,9 @@ server.post('/api/chat', async (req, res) => {
           } else if (provider === 'gemini') {
             const d = await callGemini(api_key, model, ml, ctx.systemPrompt, null);
             finalText = parseGeminiResponse(d).content || finalText;
+          } else if (provider === 'doubao') {
+            const d = await callDoubao(api_key, model, ml, ctx.systemPrompt, null);
+            finalText = parseDoubaoResponse(d).content || finalText;
           } else {
             const fixR = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key },
               body: JSON.stringify({ model, messages: ml, stream: false, max_tokens: 8192 }),

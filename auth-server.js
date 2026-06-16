@@ -34,7 +34,7 @@ function loadJSON(fp) {
 }
 function saveJSON(fp, obj) {
   const json = JSON.stringify(obj, null, 2);
-  if ([USERS_FILE, SESSIONS_FILE, CONFIG_FILE].includes(fp)) writeSecure(fp, json);
+  if ([USERS_FILE, SESSIONS_FILE, CONFIG_FILE].includes(fp)) { writeSecure(fp, json); return; }
   fs.writeFileSync(fp, json);
 }
 
@@ -79,7 +79,7 @@ if (!appConfig.smtp) appConfig.smtp = {
 let _mailer = null; let _mailerCfg = '';
 function getMailer() {
   if (!appConfig.smtp.host || !appConfig.smtp.user) return null;
-  const cfg = appConfig.smtp.host + appConfig.smtp.port + appConfig.smtp.user + appConfig.smtp.pass;
+  const cfg = [appConfig.smtp.host, appConfig.smtp.port, appConfig.smtp.user, appConfig.smtp.pass].join('|');
   if (_mailer && _mailerCfg === cfg) return _mailer;
   _mailer = nodemailer.createTransport({
     host: appConfig.smtp.host, port: appConfig.smtp.port,
@@ -93,7 +93,7 @@ function getMailer() {
 
 // ===== Verification Codes =====
 const verifyCodes = new Map();
-function genCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function genCode() { return String(crypto.randomInt(100000, 999999)); }
 function cleanCodes() {
   for (const [k, v] of verifyCodes) { if (Date.now() > v.expires) verifyCodes.delete(k); }
 }
