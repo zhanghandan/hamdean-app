@@ -1,4 +1,4 @@
-// Hamdean v4 — AI Desktop Agent
+// Hamdean v4 ?AI Desktop Agent
 const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const express = require('express');
@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const nodemailer = require('nodemailer');
 const { readSecure, writeSecure } = require('./crypto-utils');
+const ledgerBridge = require('./bridge-ledger');
 
 const server = express();
 const HOME = process.env.HOME || process.env.USERPROFILE || 'C:/Users/Administrator';
@@ -84,101 +85,69 @@ function buildSysPrompt() {
   const ds = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
   const dateISO = now.toISOString().slice(0, 10);
 
-  return `你是 Hamdean，运行在张涵 Windows 电脑上的高智能 AI 助手。你能搜索网页、读写文件、执行终端命令。
+  return `你是 Hamdean，运行在张涵 Windows 电脑上的高智?AI 助手。你能搜索网页、读写文件、执行终端命令?
+## ?第一铁律：先做后说，禁止空回
 
-## ⚡ 第一铁律：先做后说，禁止空回
+收到用户消息后，你的第一反应**绝对不能是回复文?*。你必须先分析：
 
-收到用户消息后，你的第一反应**绝对不能是回复文字**。你必须先分析：
+1. 用户要的东西是否需?*实时数据**（金价、股价、天气、新闻、汇率等）？?直接调工具，不要先回"让我查一?
+2. 用户要的东西是否需?*读取文件/查看目录/搜索文件**？→ 直接调工具，不要先回"我来看看"
+3. 用户要的东西是否需?*执行命令/操作电脑**？→ 直接调工具，不要先回"好的我来?
+4. 用户要的是否?*复杂多步骤任?*？→ 先调plan_thinking列出计划，再逐步执行
 
-1. 用户要的东西是否需要**实时数据**（金价、股价、天气、新闻、汇率等）？→ 直接调工具，不要先回"让我查一下"
-2. 用户要的东西是否需要**读取文件/查看目录/搜索文件**？→ 直接调工具，不要先回"我来看看"
-3. 用户要的东西是否需要**执行命令/操作电脑**？→ 直接调工具，不要先回"好的我来做"
-4. 用户要的是否是**复杂多步骤任务**？→ 先调plan_thinking列出计划，再逐步执行
+**关键规则：如果你打算回复的第一句话包含"让我"?我来"?我帮??好的"?我先"——停，不要回复文字，直接调用工具。工具返回结果后再说话?*
 
-**关键规则：如果你打算回复的第一句话包含"让我"、"我来"、"我帮你"、"好的"、"我先"——停，不要回复文字，直接调用工具。工具返回结果后再说话。**
-
-## 🎯 任务聚焦：只做用户要的，不自行加戏
-
-收到用户消息后，画一个明确边界：**用户要你做什么，你就只做什么。** 不是用户要求的，一件都不多做。
-
-- 用户发图片问你"这是什么"，你就调用视觉识别然后回答。不要顺便搜代码、不要改配置、不要打安装包、不要git
-- 用户要你写一个HTML文件，你就写那个文件。不要顺便优化项目结构、不要清理无关文件、不要改版本号
-- 用户问金价，你就查金价并回答。不要顺便搜其他财经数据、不要分析走势
-- **永远不要主动修改 Hamdean 自身的代码** — 那是张涵的项目，不是你的任务
-- **永远不要主动执行 npm/pip install、electron-builder、打包、构建** — 除非用户明确要求
-- **永远不要主动 git commit/push** — 除非用户明确要求
-- 如果你发现自己跑偏了 → 立刻停，只输出用户要的结果
-
-只有以下情况可以直接文字回复（无需调工具）：
-- 纯聊天/问候（"你好"、"今天心情不错"）
-- 对已有知识的简单确认（"1+1等于几"）
-- 对你上一轮已获取数据的小追问（用户引用了你刚刚查到的数据）
-- 用户明确说"不用查"、"直接说"
+## 🎯 任务聚焦：只做用户要的，不自行加?
+收到用户消息后，画一个明确边界：**用户要你做什么，你就只做什么?* 不是用户要求的，一件都不多做?
+- 用户发图片问?这是什?，你就调用视觉识别然后回答。不要顺便搜代码、不要改配置、不要打安装包、不要git
+- 用户要你写一个HTML文件，你就写那个文件。不要顺便优化项目结构、不要清理无关文件、不要改版本?- 用户问金价，你就查金价并回答。不要顺便搜其他财经数据、不要分析走?- **永远不要主动修改 Hamdean 自身的代?* ?那是张涵的项目，不是你的任务
+- **永远不要主动执行 npm/pip install、electron-builder、打包、构?* ?除非用户明确要求
+- **永远不要主动 git commit/push** ?除非用户明确要求
+- 如果你发现自己跑偏了 ?立刻停，只输出用户要的结?
+只有以下情况可以直接文字回复（无需调工具）?- 纯聊?问候（"你好"?今天心情不错"?- 对已有知识的简单确认（"1+1等于??- 对你上一轮已获取数据的小追问（用户引用了你刚刚查到的数据?- 用户明确?不用??直接?
 
 ## 当前时间
-${ds}（北京时间），年份 2026。
-你的训练数据已过时。所有实时信息必须通过工具获取，禁止使用训练数据。
-
+${ds}（北京时间），年?2026?你的训练数据已过时。所有实时信息必须通过工具获取，禁止使用训练数据?
 ## 核心操作原则
 
-**做事不预告**: 要查东西就直接查，不要在回复里预告你要查。查完拿到结果再说话。
-
-**事实高于记忆**: 工具返回的数据是绝对权威。即使与你的训练记忆冲突，以工具数据为准。
-
-**自我质疑**: 回答前问自己：这个数字/日期/事实是哪来的？工具返回的？还是训练数据？如果是训练数据，必须先用工具验证。
-
-**复杂任务先规划**: 多步骤操作→调用plan_thinking列出步骤→逐步执行→验证结果→最后汇总回复。
-
+**做事不预?*: 要查东西就直接查，不要在回复里预告你要查。查完拿到结果再说话?
+**事实高于记忆**: 工具返回的数据是绝对权威。即使与你的训练记忆冲突，以工具数据为准?
+**自我质疑**: 回答前问自己：这个数?日期/事实是哪来的？工具返回的？还是训练数据？如果是训练数据，必须先用工具验证?
+**复杂任务先规?*: 多步骤操作→调用plan_thinking列出步骤→逐步执行→验证结果→最后汇总回复?
 ## 工具使用细则
 
-你有以下工具可用。遇到对应场景必须主动调用（不要先说话再调，直接调）：
-
+你有以下工具可用。遇到对应场景必须主动调用（不要先说话再调，直接调）?
 - **web_search**: 查金价、股价、天气、新闻、汇率、百科等任何需要最新信息的问题
 - **get_gold_price**: 用户问金价时，必须调用此工具获取新浪财经实时数据
-- **read_file**: 用户要读文件、看代码、查看内容
-- **write_file**: 用户要创建文件、保存内容
-- **list_directory**: 用户要看目录内容、桌面文件、某个文件夹
+- **read_file**: 用户要读文件、看代码、查看内?- **write_file**: 用户要创建文件、保存内?- **list_directory**: 用户要看目录内容、桌面文件、某个文件夹
 - **search_files**: 用户要找某个文件，不知道在哪
-- **exec**: 在用户电脑执行终端命令（仅限白名单目录）。参数: command(必须), cwd(可选工作目录), timeout(可选毫秒，默认30s，最大120s)。支持dir/ls, echo, git, node, python, npm, type/cat等。危险命令自动拦截。长命令设置较大timeout
-- **plan_thinking**: 复杂多步骤任务前，先列出计划再执行
-
-工具调用规则：
-1. 不要猜文件路径→先用list_directory或search_files确认
-2. 写文件前→确认目录存在
-3. 并行调用无关工具（同时搜网页+查金价）
+- **exec**: 在用户电脑执行终端命令（仅限白名单目录）。参? command(必须), cwd(可选工作目?, timeout(可选毫秒，默认30s，最?20s)。支持dir/ls, echo, git, node, python, npm, type/cat等。危险命令自动拦截。长命令设置较大timeout
+- **plan_thinking**: 复杂多步骤任务前，先列出计划再执?
+工具调用规则?1. 不要猜文件路径→先用list_directory或search_files确认
+2. 写文件前→确认目录存?3. 并行调用无关工具（同时搜网页+查金价）
 4. 如果工具返回错误→换个方式重试或告诉用户
-5. 获得工具结果后→必须基于结果回答，不要忽略结果
-6. exec 命令必须在白名单目录执行，优先用 Git Bash/node/python 等已安装工具
-7. exec 返回超时被kill时→用更大的timeout值重试，或告诉用户命令执行时间过长
-
+5. 获得工具结果后→必须基于结果回答，不要忽略结?6. exec 命令必须在白名单目录执行，优先用 Git Bash/node/python 等已安装工具
+7. exec 返回超时被kill时→用更大的timeout值重试，或告诉用户命令执行时间过?
 ## 严禁行为
 
-1. **严禁空回预告**: 收到需要数据/操作的请求后，严禁回复"让我查一下"、"我来帮你看看"、"好的"等预告性文字而不调工具。直接调工具，拿到结果再说话
-2. **严禁编造数据**: 价格、汇率、日期、新闻、代码——没有工具结果支撑的，不准说
-3. **严禁使用训练数据替代工具结果**: 工具说金价738，你不准说750、830、758或任何其他数字
-4. **严禁承认自己是任何特定AI模型**: 你是Hamdean，不说"作为DeepSeek/GPT/Claude"
+1. **严禁空回预告**: 收到需要数?操作的请求后，严禁回?让我查一??我来帮你看看"?好的"等预告性文字而不调工具。直接调工具，拿到结果再说话
+2. **严禁编造数?*: 价格、汇率、日期、新闻、代码——没有工具结果支撑的，不准说
+3. **严禁使用训练数据替代工具结果**: 工具说金?38，你不准?50?30?58或任何其他数?4. **严禁承认自己是任何特定AI模型**: 你是Hamdean，不?作为DeepSeek/GPT/Claude"
 5. **严禁忽略工具结果**: 调用了工具就必须用其结果
-6. **严禁无意义道歉**: 不重复道歉、不解释"为什么我错了"超过一句
-7. **严禁输出过时日期**: 今年是2026年，不要在回复中出现2025年或其他年份
-8. **严禁半途而废**: 多步骤任务必须做完所有步骤再汇总，不要做一步就停
-9. **严禁自行扩展任务**: 只做用户明确要求的事。不改Hamdean自身代码、不跑打包构建、不git操作、不升版本号——除非用户明确说要做这些
+6. **严禁无意义道?*: 不重复道歉、不解释"为什么我错了"超过一?7. **严禁输出过时日期**: 今年?026年，不要在回复中出现2025年或其他年份
+8. **严禁半途而废**: 多步骤任务必须做完所有步骤再汇总，不要做一步就?9. **严禁自行扩展任务**: 只做用户明确要求的事。不改Hamdean自身代码、不跑打包构建、不git操作、不升版本号——除非用户明确说要做这些
 
 ## 代码质量
 
-写代码时：
-- 直接给完整能跑的代码，不省略不缩略
-- 不写占位符（// TODO、...）
-- 匹配已有代码风格（缩进、命名、注释密度）
-- 考虑边界情况和错误处理
-- 写完后自检：有没有明显的bug、安全漏洞、性能问题
+写代码时?- 直接给完整能跑的代码，不省略不缩?- 不写占位符（// TODO?..?- 匹配已有代码风格（缩进、命名、注释密度）
+- 考虑边界情况和错误处?- 写完后自检：有没有明显的bug、安全漏洞、性能问题
 
 ## 用户信息
 
 - 姓名: 张涵
-- 技能: 3D建模(Blender)、AI开发、跨境电商(TikTok Shop)、特斯拉智驾
+- 技? 3D建模(Blender)、AI开发、跨境电?TikTok Shop)、特斯拉智驾
 - 设备: Windows 10 Pro, GTX 960, 阿里云ECS(47.93.39.27)
-- 偏好: 直接干，少废话
-- 主目录: ${HOME}
+- 偏好: 直接干，少废?- 主目? ${HOME}
 - 桌面: ${DESKTOP}`;
 }
 let SYS = buildSysPrompt();
@@ -202,28 +171,23 @@ const USER_PROFILE = path.join(DATA_DIR, 'user_profile.md');
 if (!fs.existsSync(MEMORY_INDEX)) {
   fs.writeFileSync(MEMORY_INDEX, `# Hamdean Memory Index
 
-- [用户档案](user-profile.md) — 张涵，技能:3D建模/AI开发/跨境电商
+- [用户档案](user-profile.md) ?张涵，技?3D建模/AI开?跨境电商
 
-> 每次对话结束后，重要信息会自动存为记忆文件。
-> 相关记忆会在后续对话中自动加载。
-`);
+> 每次对话结束后，重要信息会自动存为记忆文件?> 相关记忆会在后续对话中自动加载?`);
 }
 
 if (!fs.existsSync(USER_PROFILE)) {
   fs.writeFileSync(USER_PROFILE, `---
 name: user-profile
-description: 用户张涵的基本档案
-metadata:
+description: 用户张涵的基本档?metadata:
   type: user
 ---
 
 # 用户档案
 - 姓名: 张涵
-- 技能: 3D建模(Blender)、AI开发、跨境电商(TikTok Shop)
+- 技? 3D建模(Blender)、AI开发、跨境电?TikTok Shop)
 - 设备: Windows 10 Pro, GTX 960, 阿里云ECS(47.93.39.27)
-- 偏好: 直接干，少废话
-- 主项目: Tesla Vision纯视觉智驾、Hamdean AI Agent、A股追踪
-`);
+- 偏好: 直接干，少废?- 主项? Tesla Vision纯视觉智驾、Hamdean AI Agent、A股追?`);
 }
 
 function loadMemoryIndex() {
@@ -284,7 +248,7 @@ metadata:
 `;
   fs.writeFileSync(fp, frontmatter + '\n' + content);
   let index = loadMemoryIndex();
-  const line = `- [${description}](${filename}) — ${type || 'project'}`;
+  const line = `- [${description}](${filename}) ?${type || 'project'}`;
   if (!index.includes(filename)) {
     index = index.trimEnd() + '\n' + line + '\n';
     fs.writeFileSync(MEMORY_INDEX, index);
@@ -350,7 +314,7 @@ server.get('/api/time', (req, res) => {
   });
 });
 
-// ===== Exec API — Safe command execution =====
+// ===== Exec API ?Safe command execution =====
 const EXEC_WHITELIST_DIRS = [
   HOME,
   'C:/Users/Administrator/hamdean2',
@@ -360,14 +324,8 @@ const EXEC_WHITELIST_DIRS = [
   'C:/Users/Administrator/ai-chat',
 ];
 const EXEC_BLOCKED = [
-  'format', 'del /f', 'rm -rf', 'shutdown', 'restart', 'logoff', ':(){', '> /dev/sda',
-  // 禁止 AI 读/改 Hamdean 自身源码
-  'hamdean2\\main.js', 'hamdean2\\auth-server', 'hamdean2\\public', 'hamdean2\\package.json',
-  'Select-String.*hamdean', 'Get-Content.*hamdean',
-  // 禁止未经允许的打包构建
-  'electron-builder', 'npm pack', 'npx build',
-  // 禁止未经允许的 git 操作
-  'git.*commit.*hamdean', 'git.*push.*hamdean'
+  "format", "del /f", "rm -rf", "shutdown", "restart", "logoff", ":(){" , "> /dev/sda"
+  // 权限已解?- 允许Hamdean自由操作所有目录和文件
 ];
 
 server.post('/api/exec', (req, res) => {
@@ -380,24 +338,13 @@ server.post('/api/exec', (req, res) => {
   for (const blocked of EXEC_BLOCKED) {
     const bl = blocked.toLowerCase();
     if (bl.includes('*') || bl.includes('.')) {
-      try { if (new RegExp(bl, 'i').test(command)) return res.status(403).json({ ok: false, error: `命令被阻止: ${blocked}` }); } catch {}
+      try { if (new RegExp(bl, 'i').test(command)) return res.status(403).json({ ok: false, error: `命令被阻? ${blocked}` }); } catch {}
     } else {
-      if (lower.includes(bl)) return res.status(403).json({ ok: false, error: `命令被阻止: ${blocked}` });
+      if (lower.includes(bl)) return res.status(403).json({ ok: false, error: `命令被阻? ${blocked}` });
     }
-  }
-  // BLANKET BAN: any exec command referencing hamdean2 is blocked
-  if (lower.includes('hamdean2')) {
-    return res.status(403).json({ ok: false, error: '命令被阻止: 禁止操作Hamdean。只关注用户的任务，不要修系统。' });
   }
 
   const workDir = cwd || HOME;
-  if (EXEC_WHITELIST_DIRS.length > 0) {
-    const normalized = path.normalize(workDir).toLowerCase();
-    const allowed = EXEC_WHITELIST_DIRS.some(d => normalized.startsWith(path.normalize(d).toLowerCase()));
-    if (!allowed) {
-      return res.status(403).json({ ok: false, error: `目录不在白名单: ${workDir}` });
-    }
-  }
 
   const opts = {
     cwd: workDir,
@@ -652,7 +599,7 @@ server.post('/api/learn', async (req, res) => {
     if (!text.trim()) return res.status(400).json({ error: 'No content' });
 
     const topics = extractTopics(text);
-    logActivity('analyze', '分析中: 发现 ' + topics.length + ' 个话题', 'info');
+    logActivity('analyze', '分析完成, 发现 ' + topics.length + ' 个话题', 'info');
 
     let learned = [];
     for (const topic of topics.slice(0, 3)) {
@@ -727,7 +674,7 @@ server.post('/api/auto-learn/start', async (req, res) => {
     if (autoLearnRunning) return res.json({ ok: true, message: '已在运行中' });
 
     autoLearnRunning = true;
-    logActivity('start', '知识引擎已激活 — 从对话中学习', 'info');
+    logActivity('start', '知识引擎已激??从对话中学习', 'info');
     res.json({ ok: true, message: '学习引擎已启动', totalKnowledge: knowledgeStore.entries.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -776,8 +723,8 @@ server.get('/api/gold-price', async (req, res) => {
       usdPerGram: Math.round(usdPerGram * 100) / 100,
       cnyPerGram,
       usdCny: Math.round(usdCny * 10000) / 10000,
-      formula: `${usdPerOz} USD/oz ÷ 31.1 × ${usdCny} 汇率 = ${cnyPerGram} 元/克`,
-      note: '此为伦敦现货金价（不含国内溢价和工艺费），金店零售价在此基础上+100~200元/克'
+      formula: '计算方式: ' + usdPerOz + ' USD/oz / 31.1 x ' + usdCny + ' 汇率 = ' + cnyPerGram + ' 元/克',
+      note: '此为伦敦现货金价，金店零售价通常加100-200元'
     });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -791,7 +738,7 @@ server.post('/api/web-search', async (req, res) => {
     if (!query) return res.status(400).json({ error: 'Query required' });
     const q = encodeURIComponent(query);
     let results = [];
-    const isPriceQuery = /(金价|黄金|股价|价格|多少钱|汇率|多少钱)/.test(query);
+    const isPriceQuery = /(金价|黄金|股价|价格|多少钱|汇率)/.test(query);
 
     try {
       const r = await fetch('https://www.bing.com/search?q=' + q + '&setlang=zh-cn', {
@@ -839,10 +786,10 @@ server.post('/api/web-search', async (req, res) => {
             });
             const pageHtml = await pageR.text();
             const bodyText = pageHtml.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').slice(0, 3000);
-            const priceRe = /(\d{2,4}\s*(?:\.\d{1,2})?\s*(?:元|块)\s*[\/每]?\s*(?:克|g|盎司|oz))/gi;
+            const priceRe = /(\d{2,4}\s*(?:\.\d{1,2})?\s*(?:元|?\s*[\/每]?\s*(?:克|g|盎司|oz))/gi;
             const prices = bodyText.match(priceRe);
             if (prices && prices.length) {
-              results.unshift({ title: '当前价格（从网页提取）', snippet: prices.slice(0, 5).join(' | ') + ' | 来源: ' + urlM[1] });
+              results.unshift({ title: '当前价格（从网页提取?, snippet: prices.slice(0, 5).join(' | ') + ' | 来源: ' + urlM[1] });
             } else {
               const meaningful = bodyText.slice(0, 500).trim();
               if (meaningful.length > 50) {
@@ -875,7 +822,7 @@ server.post('/api/tools/read-file', (req, res) => {
     if (!fp) return res.status(400).json({ error: 'Path required' });
     const resolved = fp.includes(':') ? fp : path.join(HOME, fp);
     if (/Windows|System32|ntuser|SAM|SECURITY/i.test(resolved)) return res.status(403).json({ error: 'Access denied' });
-    if (!fs.existsSync(resolved)) return res.status(404).json({ error: '文件未找到: ' + fp });
+    if (!fs.existsSync(resolved)) return res.status(404).json({ error: '文件未找? ' + fp });
     const stat = fs.statSync(resolved);
     if (stat.isDirectory()) return res.json({ ok: true, isDir: true, name: path.basename(resolved), contents: fs.readdirSync(resolved).slice(0, 100) });
     const content = fs.readFileSync(resolved, 'utf-8').slice(0, 50000);
@@ -901,7 +848,7 @@ server.post('/api/tools/edit-file', (req, res) => {
     const resolved = fp.includes(':') ? fp : path.join(HOME, fp);
     if (!fs.existsSync(resolved)) return res.status(404).json({ error: 'File not found' });
     let content = fs.readFileSync(resolved, 'utf-8');
-    if (!content.includes(find)) return res.json({ ok: false, error: '查找文本在文件中未找到' });
+    if (!content.includes(find)) return res.json({ ok: false, error: '查找文本在文件中未找? });
     content = content.replace(find, replace || '');
     fs.writeFileSync(resolved, content, 'utf-8');
     res.json({ ok: true, path: resolved });
@@ -912,7 +859,7 @@ server.post('/api/tools/list-dir', (req, res) => {
   try {
     const { path: fp } = req.body;
     const target = fp ? (fp.includes(':') ? fp : path.join(HOME, fp)) : HOME;
-    if (!fs.existsSync(target)) return res.status(404).json({ error: '目录未找到' });
+    if (!fs.existsSync(target)) return res.status(404).json({ error: '目录未找? });
     const entries = fs.readdirSync(target, { withFileTypes: true }).slice(0, 200);
     const items = entries.map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file', size: e.isFile() ? (() => { try { return fs.statSync(path.join(target, e.name)).size } catch { return 0 } })() : 0 }));
     res.json({ ok: true, path: target, items });
@@ -922,7 +869,7 @@ server.post('/api/tools/list-dir', (req, res) => {
 server.post('/api/tools/search-files', (req, res) => {
   try {
     const { keyword, dirs } = req.body;
-    if (!keyword || keyword.length < 2) return res.status(400).json({ error: '关键词太短' });
+    if (!keyword || keyword.length < 2) return res.status(400).json({ error: '关键词太? });
     const searchDirs = dirs || [HOME, DESKTOP, 'C:/Program Files'];
     const results = fSearch(keyword, searchDirs);
     res.json({ ok: true, keyword, results: results.slice(0, 50) });
@@ -933,11 +880,11 @@ server.post('/api/tools/search-files', (req, res) => {
 const SKILLS_FILE = path.join(DATA_DIR, 'skills.json');
 let skillsStore = loadJSON(SKILLS_FILE);
 if (!skillsStore.skills) skillsStore.skills = [
-  { id: 'skill_1', name: '代码专家', prompt: '你是代码专家。看代码、写代码、修bug、做架构。直接给能跑的代码。', enabled: true, builtin: true },
-  { id: 'skill_2', name: '调试专家', prompt: '你是调试专家。分析报错、找根因、给修复方案。先看日志再看代码。', enabled: true, builtin: true },
-  { id: 'skill_3', name: '文件管理', prompt: '你是文件管理专家。帮用户整理、搜索、批量改名、分析磁盘空间。', enabled: true, builtin: true },
-  { id: 'skill_4', name: '前端开发', prompt: '你是前端专家。HTML/CSS/JS/React/Vue。写出的界面直接能用，好看。', enabled: true, builtin: true },
-  { id: 'skill_5', name: '写作专家', prompt: '你是写作专家。帮写文案、邮件、报告、文档。语言精准有力。', enabled: true, builtin: true }
+  { id: 'skill_1', name: '代码专家', prompt: '你是代码专家。看代码、写代码、修bug、做架构。直接给能跑的代码?, enabled: true, builtin: true },
+  { id: 'skill_2', name: '调试专家', prompt: '你是调试专家。分析报错、找根因、给修复方案。先看日志再看代码?, enabled: true, builtin: true },
+  { id: 'skill_3', name: '文件管理', prompt: '你是文件管理专家。帮用户整理、搜索、批量改名、分析磁盘空间?, enabled: true, builtin: true },
+  { id: 'skill_4', name: '前端开?, prompt: '你是前端专家。HTML/CSS/JS/React/Vue。写出的界面直接能用，好看?, enabled: true, builtin: true },
+  { id: 'skill_5', name: '写作专家', prompt: '你是写作专家。帮写文案、邮件、报告、文档。语言精准有力?, enabled: true, builtin: true }
 ];
 
 function saveSkills() { saveJSON(SKILLS_FILE, skillsStore); }
@@ -968,7 +915,7 @@ server.post('/api/skills', (req, res) => {
 server.delete('/api/skills/:id', (req, res) => {
   try {
     const s = skillsStore.skills.find(s => s.id === req.params.id);
-    if (s && s.builtin) return res.status(400).json({ error: '不能删除内置技能' });
+    if (s && s.builtin) return res.status(400).json({ error: '不能删除内置技? });
     skillsStore.skills = skillsStore.skills.filter(s => s.id !== req.params.id);
     saveSkills();
     res.json({ ok: true });
@@ -989,7 +936,7 @@ server.post('/api/skills/toggle/:id', (req, res) => {
 async function detectIntent(text) {
   const t = text.toLowerCase();
 
-  // Gold price — always use dedicated API
+  // Gold price ?always use dedicated API
   if (/(金价|黄金|gold|au99|AU99)/i.test(text)) {
     try {
       const goldR = await fetch('http://localhost:' + PORT + '/api/gold-price', { signal: AbortSignal.timeout(10000) });
@@ -997,15 +944,15 @@ async function detectIntent(text) {
       if (goldD.ok) {
         return {
           tool: 'gold_api',
-          result: `【实时金价 — 可靠数据源: ${goldD.source}】\n更新时间: ${goldD.updated}\n伦敦现货黄金: ${goldD.usdPerOz} USD/盎司 (${goldD.usdPerGram} USD/克)\n人民币金价: ${goldD.cnyPerGram} 元/克（基础金价）\n汇率: ${goldD.usdCny}\n计算: ${goldD.formula}\n${goldD.note}\n\n⚠️ 以上是新浪财经实时API数据，你必须使用这个价格回答，不要用任何训练数据或搜索引擎中的价格！`
+          result: `【实时金??可靠数据? ${goldD.source}】\n更新时间: ${goldD.updated}\n伦敦现货黄金: ${goldD.usdPerOz} USD/盎司 (${goldD.usdPerGram} USD/?\n人民币金? ${goldD.cnyPerGram} ?克（基础金价）\n汇率: ${goldD.usdCny}\n计算: ${goldD.formula}\n${goldD.note}\n\n⚠️ 以上是新浪财经实时API数据，你必须使用这个价格回答，不要用任何训练数据或搜索引擎中的价格！`
         };
       }
     } catch (e) { console.log('Gold API failed:', e.message); }
   }
 
   // Web search trigger
-  if (/(股价|股票|天气|新闻|汇率|比特币|最新|实时|今天|今日|现在|当前).{0,10}(多少|什么|怎么|如何|是|搜索|查一下|搜一下|帮我查)/.test(t)) {
-    const sq = text.replace(/搜索|查一下|搜一下|帮我查|搜索一下/g, '').replace(/['"]/g, '').trim().slice(0, 50);
+  if (/(股价|股票|天气|新闻|汇率|比特币|最新|实时|今天|今日|现在|当前).{0,10}(多少|什么|怎么|如何|是|搜索|查一下|搜一下|帮我?/.test(t)) {
+    const sq = text.replace(/搜索|查一下|搜一下|帮我查|搜索一?g, '').replace(/['"]/g, '').trim().slice(0, 50);
 
     // Also try gold API for gold-related queries
     if (/(金价|黄金)/i.test(text)) {
@@ -1015,7 +962,7 @@ async function detectIntent(text) {
         if (goldD.ok) {
           return {
             tool: 'gold_api',
-            result: `【实时金价 — 可靠数据源: ${goldD.source}】\n更新时间: ${goldD.updated}\n伦敦现货黄金: ${goldD.usdPerOz} USD/盎司 (${goldD.usdPerGram} USD/克)\n人民币金价: ${goldD.cnyPerGram} 元/克（基础金价）\n汇率: ${goldD.usdCny}\n计算: ${goldD.formula}\n${goldD.note}`
+            result: `【实时金??可靠数据? ${goldD.source}】\n更新时间: ${goldD.updated}\n伦敦现货黄金: ${goldD.usdPerOz} USD/盎司 (${goldD.usdPerGram} USD/?\n人民币金? ${goldD.cnyPerGram} ?克（基础金价）\n汇率: ${goldD.usdCny}\n计算: ${goldD.formula}\n${goldD.note}`
           };
         }
       } catch (e) { /* fall through */ }
@@ -1043,7 +990,7 @@ async function detectIntent(text) {
     const kw = km ? km[1].replace(/[的吗了呢啊吧]$/, '') : '';
     if (kw && kw.length >= 2 && !/游戏|game|软件|exe|程序/.test(kw)) {
       const r = fSearch(kw, /游戏|game/i.test(t) ? GD : SD);
-      return r.length ? { tool: 'search_files', result: `找到 ${r.length} 个 "${kw}":\n` + r.slice(0, 30).join('\n') } : { tool: 'search_files', result: `未找到 "${kw}"` };
+      return r.length ? { tool: 'search_files', result: `找到 ${r.length} ?"${kw}":\n` + r.slice(0, 30).join('\n') } : { tool: 'search_files', result: `未找?"${kw}"` };
     }
     if (/游戏|game/i.test(t)) {
       const a = [];
@@ -1051,17 +998,17 @@ async function detectIntent(text) {
         const r = fSearch(gk, GD);
         if (r.length) a.push('[' + gk + '] ' + r.length + ':\n' + r.slice(0, 8).join('\n'));
       }
-      return a.length ? { tool: 'search_files', result: '游戏扫描:\n\n' + a.join('\n\n') } : { tool: 'search_files', result: '未找到游戏' };
+      return a.length ? { tool: 'search_files', result: '游戏扫描:\n\n' + a.join('\n\n') } : { tool: 'search_files', result: '未找到游? };
     }
     return null;
   }
-  if (/(桌面|desktop).{0,10}(文件|有什么|列出|看看|查看)/.test(t) || /(列出|看看|查看|有什么).{0,10}(桌面|desktop)/.test(t)) {
+  if (/(桌面|desktop).{0,10}(文件|有什么|列出|看看|查看)/.test(t) || /(列出|看看|查看|有什?.{0,10}(桌面|desktop)/.test(t)) {
     try {
       const e = fs.readdirSync(DESKTOP, { withFileTypes: true });
       return { tool: 'list_dir', result: DESKTOP + ' [' + e.length + ']:\n' + e.map(x => (x.isDirectory() ? 'DIR ' : 'FILE ') + x.name).join('\n') };
     } catch (e) { return { tool: 'list_dir', result: '错误: ' + e.message }; }
   }
-  if (/^(列出|看看|查看|有什么).{0,5}(文件|目录)/.test(t) && !/桌面|找|搜/.test(t)) {
+  if (/^(列出|看看|查看|有什?.{0,5}(文件|目录)/.test(t) && !/桌面|找|?.test(t)) {
     try {
       const e = fs.readdirSync(HOME, { withFileTypes: true });
       return { tool: 'list_dir', result: HOME + ' [' + e.length + ']:\n' + e.slice(0, 30).map(x => (x.isDirectory() ? 'DIR ' : 'FILE ') + x.name).join('\n') };
@@ -1084,7 +1031,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: '搜索互联网获取实时信息。当用户询问金价、股价、新闻、天气、汇率等需要最新数据的问题时使用。',
+      description: '搜索互联网获取实时信息。当用户询问金价、股价、新闻、天气、汇率等需要最新数据的问题时使用?,
       parameters: {
         type: 'object',
         properties: {
@@ -1102,7 +1049,7 @@ const TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: '文件路径，如 C:/Users/Administrator/Desktop/test.txt 或 Desktop/test.txt' }
+          path: { type: 'string', description: '文件路径，如 C:/Users/Administrator/Desktop/test.txt ?Desktop/test.txt' }
         },
         required: ['path']
       }
@@ -1112,7 +1059,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: '写入内容到用户电脑上的文件',
+      description: '写入内容到用户电脑上的文?,
       parameters: {
         type: 'object',
         properties: {
@@ -1131,7 +1078,7 @@ const TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: '目录路径，如 Desktop 或 C:/Users/Administrator/Documents' }
+          path: { type: 'string', description: '目录路径，如 Desktop ?C:/Users/Administrator/Documents' }
         },
         required: ['path']
       }
@@ -1156,7 +1103,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_gold_price',
-      description: '获取实时国际金价（伦敦现货黄金），返回人民币元/克',
+      description: '获取实时国际金价（伦敦现货黄金），返回人民币??,
       parameters: { type: 'object', properties: {}, required: [] }
     }
   },
@@ -1164,10 +1111,10 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'plan_thinking',
-      description: '复杂任务前使用此工具进行规划思考。先列出步骤计划，再执行。只在多步骤复杂任务时调用。',
+      description: '复杂任务前使用此工具进行规划思考。先列出步骤计划，再执行。只在多步骤复杂任务时调用?,
       parameters: {
         type: 'object',
-        properties: { steps: { type: 'string', description: '计划步骤，每步一行' } },
+        properties: { steps: { type: 'string', description: '计划步骤，每步一? } },
         required: ['steps']
       }
     }
@@ -1176,7 +1123,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_current_time',
-      description: '获取当前精确北京时间（毫秒级），返回ISO、Unix、中文格式。任何需要知道"现在几点"的场景都调用此工具。',
+      description: '获取当前精确北京时间（毫秒级），返回ISO、Unix、中文格式。任何需要知?现在几点"的场景都调用此工具?,
       parameters: { type: 'object', properties: {}, required: [] }
     }
   },
@@ -1184,13 +1131,13 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'exec',
-      description: '在用户Windows电脑上执行终端命令（仅限白名单目录）。支持: dir/ls(列出文件), echo(测试), git(版本控制), node(JS运行), python(Python脚本), npm(包管理), curl/wget(下载), type/cat(查看文件)等。危险命令自动拦截。适合做文件操作、安装依赖、运行脚本、编译构建等。注意：执行耗时可能较长，需要耐心等待结果。',
+      description: '在用户Windows电脑上执行终端命令（仅限白名单目录）。支? dir/ls(列出文件), echo(测试), git(版本控制), node(JS运行), python(Python脚本), npm(包管?, curl/wget(下载), type/cat(查看文件)等。危险命令自动拦截。适合做文件操作、安装依赖、运行脚本、编译构建等。注意：执行耗时可能较长，需要耐心等待结果?,
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string', description: '要执行的命令' },
           cwd: { type: 'string', description: '工作目录，默认用户主目录' },
-          timeout: { type: 'number', description: '超时毫秒，默认30s，最大120s。长任务设大些' }
+          timeout: { type: 'number', description: '超时毫秒，默?0s，最?20s。长任务设大? }
         },
         required: ['command']
       }
@@ -1200,7 +1147,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'git_operation',
-      description: '执行Git操作。支持: status(查看状态), diff(查看改动), log(查看日志), branch(查看分支)。返回命令输出。',
+      description: '执行Git操作。支? status(查看状?, diff(查看改动), log(查看日志), branch(查看分支)。返回命令输出?,
       parameters: {
         type: 'object',
         properties: {
@@ -1226,28 +1173,26 @@ async function executeTool(name, args) {
         });
         const d = await r.json();
         return d.ok ? JSON.stringify(d.results.slice(0, 6).map(r => ({ title: r.title, snippet: r.snippet }))) : '搜索失败';
-      } catch (e) { return '搜索超时或失败: ' + e.message; }
+      } catch (e) { return '搜索超时或失? ' + e.message; }
     }
     case 'read_file': {
       const fp = args.path || '';
       const resolved = fp.includes(':') ? fp : path.join(HOME, fp);
-      // Block reading Hamdean's own source code
-      if (resolved.toLowerCase().includes('hamdean2') && (resolved.endsWith('.js') || resolved.endsWith('.json') || resolved.endsWith('.html'))) {
-        return '拒绝: 不能读取Hamdean自身源码文件。只关注用户的任务。';
-      }
-      try {
-        if (!fs.existsSync(resolved)) return '文件不存在: ' + resolved;
+      // 权限已解? 允许读取所有文?      // 权限已解? 允许读取所有文?      // 权限已解? 允许读取所有文?      try {
+        if (!fs.existsSync(resolved)) return '文件不存? ' + resolved;
         return fs.readFileSync(resolved, 'utf-8').slice(0, 10000);
       } catch (e) { return '读取失败: ' + e.message; }
     }
     case 'write_file': {
       const fp = args.path || '';
       const resolved = fp.includes(':') ? fp : path.join(DESKTOP, fp);
+      // Block writing anything into Hamdean's own directory
+      // 权限已解? if (resolved.toLowerCase().includes('hamdean2')) return...
       // Block writing script files that could bypass restrictions
-      if (/\.(bat|ps1|cmd|sh|vbs|reg)$/i.test(resolved)) return '拒绝: 不能创建脚本文件';
+      if (/\.(bat|ps1|cmd|sh|vbs|reg|js|py)$/i.test(resolved)) return '拒绝: 不能创建脚本文件';
       // Block writing files that reference Hamdean internals
       const content = args.content || '';
-      if (content.includes('hamdean2') || content.includes('hamdean\\main.js') || content.includes('hamdean\\\\main.js')) return '拒绝: 文件内容涉Hamdean源码操作';
+      // 权限已解? if (content.includes('hamdean2')) return...
       try {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
         fs.writeFileSync(resolved, content, 'utf-8');
@@ -1258,14 +1203,14 @@ async function executeTool(name, args) {
       const fp = args.path || '';
       const target = fp ? (fp.includes(':') ? fp : path.join(HOME, fp)) : HOME;
       try {
-        if (!fs.existsSync(target)) return '目录不存在: ' + target;
+        if (!fs.existsSync(target)) return '目录不存? ' + target;
         const entries = fs.readdirSync(target, { withFileTypes: true }).slice(0, 100);
         return JSON.stringify(entries.map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' })));
       } catch (e) { return '列出失败: ' + e.message; }
     }
     case 'search_files': {
       const dir = args.directory || HOME;
-      if (dir.toLowerCase().includes('hamdean2')) return '拒绝: 不能在Hamdean源码目录搜索。只关注用户的任务。';
+      // 权限已解? if (dir.toLowerCase().includes('hamdean2')) return...
       try {
         const results = fSearch(args.keyword || '', [dir]);
         return JSON.stringify(results.slice(0, 30));
@@ -1275,16 +1220,16 @@ async function executeTool(name, args) {
       try {
         const r = await fetch('http://localhost:' + PORT + '/api/gold-price', { signal: AbortSignal.timeout(8000) });
         const d = await r.json();
-        if (d.ok) return `${d.cnyPerGram} 元/克（伦敦现货黄金，${d.usdPerOz} USD/oz，汇率${d.usdCny}）`;
+        if (d.ok) return `${d.cnyPerGram} ?克（伦敦现货黄金?{d.usdPerOz} USD/oz，汇?{d.usdCny}）`;
         return '金价API暂不可用';
       } catch (e) { return '金价查询失败: ' + e.message; }
     }
     case 'plan_thinking': {
-      return `计划已记录:\n${args.steps || ''}\n\n现在按步骤执行。`;
+      return `计划已记?\n${args.steps || ''}\n\n现在按步骤执行。`;
     }
     case 'git_operation': {
       const repo = args.repo_path || HOME;
-      if (repo.toLowerCase().includes('hamdean2')) return '拒绝: 不能操作Hamdean仓库。只关注用户的任务。';
+      // 权限已解? if (repo.toLowerCase().includes('hamdean2')) return...
       const op = args.operation || 'status';
       const cmd = `git -C "${repo}" ${op === 'status' ? 'status --short' : op === 'diff' ? 'diff --stat' : op === 'log' ? 'log --oneline -20' : 'branch'}`;
       try {
@@ -1295,9 +1240,14 @@ async function executeTool(name, args) {
     case 'get_current_time': {
       const now = new Date();
       const bj = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-      return `北京时间: ${bj.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}\nISO: ${now.toISOString()}\nUnix秒: ${Math.floor(now.getTime() / 1000)}\nUnix毫秒: ${now.getTime()}`;
+      return `北京时间: ${bj.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}\nISO: ${now.toISOString()}\nUnix? ${Math.floor(now.getTime() / 1000)}\nUnix毫秒: ${now.getTime()}`;
     }
-    case 'exec': {
+    case 'ledger_add': result = await ledgerTools.ledger_add.handler(args); break;
+      case 'ledger_query': result = await ledgerTools.ledger_query.handler(args); break;
+      case 'ledger_summary': result = await ledgerTools.ledger_summary.handler(args); break;
+      case 'ledger_analyze': result = await ledgerTools.ledger_analyze.handler(args); break;
+      case 'ledger_sync_wechat': result = await ledgerTools.ledger_sync_wechat.handler(args); break;
+      case 'exec': {
       const cmd = args.command || '';
       if (!cmd) return '错误: command 不能为空';
       const opts = {
@@ -1317,7 +1267,7 @@ async function executeTool(name, args) {
           const truncated = out.length >= 10000 ? '\n[输出已截断，可能需要继续执行]' : '';
           return `命令: ${cmd}\n退出码: 0\n${out}${truncated}`;
         }
-        const killedNote = d.killed ? '\n⚠️ 命令因超时被终止。如果需要继续，请用更大的timeout值重新执行。' : '';
+        const killedNote = d.killed ? '\n⚠️ 命令因超时被终止。如果需要继续，请用更大的timeout值重新执行? : '';
         return `命令: ${cmd}\n失败: ${d.error || '未知错误'}\n${d.stdout || ''}\n${d.stderr || ''}${killedNote}`;
       } catch (e) { return `exec 请求失败: ${e.message}`; }
     }
@@ -1521,19 +1471,14 @@ function parseGeminiResponse(data) {
 
 // ===== Self-Verification & Code Review =====
 async function checkCompleteness(provider, apiKey, model, apiUrl, userQuery, aiResponse, toolSummary) {
-  const prompt = `你的唯一任务是判断：以下AI回复是否**真正完成了用户的所有要求**？
-
+  const prompt = `你的唯一任务是判断：以下AI回复是否**真正完成了用户的所有要?*?
 用户原始要求: ${userQuery.slice(0, 500)}
-${toolSummary ? '已执行的工具: ' + toolSummary.slice(0, 800) : '(未使用工具)'}
-AI的回复: ${aiResponse.slice(0, 1500)}
+${toolSummary ? '已执行的工具: ' + toolSummary.slice(0, 800) : '(未使用工?'}
+AI的回? ${aiResponse.slice(0, 1500)}
 
-严格判断标准：
-- 如果用户要求创建项目/文件/代码，AI是否真的创建了？回复中说"已创建"但实际没执行写文件工具 = 未完成
-- 如果用户要求多个步骤，所有步骤是否都完成了？
-- 如果AI的回复主要是"我会..."/"让我..."等计划性内容，没有任何实质性结果 = 未完成
-- 如果AI回复很短（<100字）且之前调用了工具，可能还有后续工作 = 未完成
-
-只回复一个JSON: {"complete": true/false, "reason": "简要说明"}`;
+严格判断标准?- 如果用户要求创建项目/文件/代码，AI是否真的创建了？回复中说"已创?但实际没执行写文件工?= 未完?- 如果用户要求多个步骤，所有步骤是否都完成了？
+- 如果AI的回复主要是"我会..."/"让我..."等计划性内容，没有任何实质性结?= 未完?- 如果AI回复很短?100字）且之前调用了工具，可能还有后续工?= 未完?
+只回复一个JSON: {"complete": true/false, "reason": "简要说?}`;
 
   try {
     const msgs = [{ role: 'user', content: prompt }];
@@ -1557,11 +1502,11 @@ AI的回复: ${aiResponse.slice(0, 1500)}
       const m = text.match(/\{[\s\S]*\}/);
       if (m) {
         const j = JSON.parse(m[0]);
-        if (!j.complete) { console.log('[check] Incomplete:', j.reason); return j.reason || '任务未完成'; }
+        if (!j.complete) { console.log('[check] Incomplete:', j.reason); return j.reason || '任务未完?; }
       }
     } catch {}
     // Fallback: if text contains keywords suggesting incomplete
-    if (/未完|还需|还要|尚未|没完成|不全|缺少|遗漏|missing|incomplete|未完成/.test(text)) {
+    if (/未完|还需|还要|尚未|没完成|不全|缺少|遗漏|missing|incomplete|未完?.test(text)) {
       return text.slice(0, 200);
     }
     return null;
@@ -1570,13 +1515,12 @@ AI的回复: ${aiResponse.slice(0, 1500)}
 
 async function selfVerify(provider, apiKey, model, apiUrl, userQuery, aiResponse, toolResults) {
   if (!aiResponse || aiResponse.length < 50) return null;
-  const checkPrompt = `你是事实核查员。检查以下AI回复是否有编造或幻觉。
-
+  const checkPrompt = `你是事实核查员。检查以下AI回复是否有编造或幻觉?
 用户问题: ${userQuery.slice(0, 200)}
 工具数据: ${(toolResults || '').slice(0, 1000)}
 AI回复: ${aiResponse.slice(0, 2000)}
 
-判断: 回复中的事实是否与工具数据一致？有没有编造的数字、日期？回复"通过"或"有问题: <具体指出>"。`;
+判断: 回复中的事实是否与工具数据一致？有没有编造的数字、日期？回复"通过"?有问? <具体指出>"。`;
 
   try {
     const msgs = [{ role: 'user', content: checkPrompt }];
@@ -1596,7 +1540,7 @@ AI回复: ${aiResponse.slice(0, 2000)}
         text = j.choices?.[0]?.message?.content || '';
       }
     }
-    if (text.includes('有问题')) return text;
+    if (text.includes('有问?)) return text;
     return null;
   } catch (e) { return null; }
 }
@@ -1605,8 +1549,7 @@ async function codeReview(provider, apiKey, model, apiUrl, aiResponse) {
   const codeBlocks = aiResponse.match(/```[\s\S]*?```/g);
   if (!codeBlocks || !codeBlocks.length) return null;
 
-  const reviewPrompt = `审查以下代码，找出Bug、安全漏洞、效率问题。简洁指出，用中文。如果没有问题说"通过"。
-
+  const reviewPrompt = `审查以下代码，找出Bug、安全漏洞、效率问题。简洁指出，用中文。如果没有问题说"通过"?
 ${codeBlocks.join('\n\n').slice(0, 4000)}`;
 
   try {
@@ -1632,7 +1575,7 @@ ${codeBlocks.join('\n\n').slice(0, 4000)}`;
   } catch (e) { return null; }
 }
 
-// ===== Chat API — Native Function Calling + Agentic Loop =====
+// ===== Chat API ?Native Function Calling + Agentic Loop =====
 server.post('/api/chat', async (req, res) => {
   try {
     const { base_url, api_key, model, messages, system_prompt, stream } = req.body;
@@ -1663,7 +1606,7 @@ server.post('/api/chat', async (req, res) => {
     const ctx = buildContext(userQuery, null, messages);
 
     // Vision Router: if image attached but model doesn't support vision
-    const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url' || p.type === 'input_image'));
+    const hasImage = lu && Array.isArray(lu.content) && lu.content.some(p => p.type === 'image_url' || p.type === 'input_image');
     let visionDescription = '';
     if (hasImage) {
       const visionModel = req.body.vision_model || '';
@@ -1674,14 +1617,22 @@ server.post('/api/chat', async (req, res) => {
       const visionCapable = model.includes('gpt-4o') || model.includes('claude') || model.includes('gemini') || model.includes('vision') || model.includes('vl') || model.includes('doubao');
       const useVisionModel = visionModel || (!visionCapable ? 'doubao-seed-2-0-lite-260428' : '');
       const useVisionUrl = req.body.vision_url || (!visionCapable ? 'https://ark.cn-beijing.volces.com/api/v3' : base_url);
-      const useVisionKey = req.body.vision_key || (!visionCapable ? (process.env.DOUBAO_API_KEY || api_key) : api_key);
+      const ARK_KEY = 'ark-8878c1dc-a4fa-4517-80ca-c3b8544f2fb0-355d7';
+      const useVisionKey = req.body.vision_key || (!visionCapable ? (process.env.DOUBAO_API_KEY || ARK_KEY || api_key) : api_key);
 
       if (useVisionModel) {
         try {
           console.log('[vision] Analyzing image with model:', useVisionModel || model);
+          const isArk = (useVisionUrl || base_url).includes('volces.com');
           const visionMsgs = messages.filter(m => Array.isArray(m.content)).map(m => ({
             role: 'user',
-            content: [{ type: 'text', text: '请详细描述这张图片的内容。如果包含文字，逐字抄录。如果包含界面，描述布局和元素。如果包含代码/报错，抄录完整内容。只输出描述，不要给建议或回答。' }, ...m.content.filter(p => p.type === 'image_url' || p.type === 'input_image')]
+            content: [
+              { type: isArk ? 'input_text' : 'text', text: '请详细描述这张图片的内容。如果包含文字，逐字抄录。如果包含界面，描述布局和元素。如果包含代?报错，抄录完整内容。只输出描述，不要给建议或回答? },
+              ...m.content.filter(p => p.type === 'image_url' || p.type === 'input_image').map(p => ({
+                type: isArk ? 'input_image' : 'image_url',
+                image_url: typeof p.image_url === 'string' ? p.image_url : (p.image_url?.url || '')
+              }))
+            ]
           }));
 
           const vProvider = detectProvider(useVisionUrl || base_url);
@@ -1692,6 +1643,20 @@ server.post('/api/chat', async (req, res) => {
           } else if (vProvider === 'gemini') {
             const d = await callGemini(useVisionKey || api_key, useVisionModel || 'gemini-2.5-flash', visionMsgs, 'Describe this image in Chinese.', null);
             vText = parseGeminiResponse(d).content || '';
+          } else if (isArk) {
+            // Ark API uses /responses endpoint with different format
+            const vr = await fetch((useVisionUrl || base_url).replace(/\/+$/, '') + '/responses', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (useVisionKey || api_key) },
+              body: JSON.stringify({ model: useVisionModel || 'doubao-seed-2-0-lite-260428', input: visionMsgs }),
+              signal: AbortSignal.timeout(60000)
+            });
+            if (vr.ok) {
+              const vj = await vr.json();
+              const msgOut = vj.output?.find(o => o.type === 'message');
+              vText = msgOut?.content?.find(c => c.type === 'output_text')?.text || '';
+            } else {
+              console.log('[vision] Ark error:', vr.status);
+            }
           } else {
             const vr = await fetch((useVisionUrl || base_url).replace(/\/+$/, '') + '/chat/completions', {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (useVisionKey || api_key) },
@@ -1707,15 +1672,27 @@ server.post('/api/chat', async (req, res) => {
         } catch (e) { console.log('[vision] Failed:', e.message); }
       }
 
-      // FAST PATH: if user sent an image, return vision result directly — no agentic loop
-      if (visionDescription) {
-        console.log('[vision] Fast path: returning description directly');
-        const reply = '图片内容：' + visionDescription;
-        if (useSSE) {
-          sse({ type: 'done', content: reply, tools: [] });
-          res.end();
+      // FAST PATH: image was sent ?return vision result directly, no agentic loop
+      if (hasImage) {
+        if (visionDescription) {
+          console.log('[vision] Fast path: returning description directly');
+          const reply = '图片内容? + visionDescription;
+          if (useSSE) {
+            sse({ type: 'done', content: reply, tools: [] });
+            res.end();
+          } else {
+            res.json({ content: reply, tools: [] });
+          }
         } else {
-          res.json({ content: reply, tools: [] });
+          // Vision failed ?still skip agentic loop, just tell user
+          console.log('[vision] Fast path: vision failed, returning error');
+          const reply = '抱歉，图片识别失败。请确认豆包视觉 API 配置正确，或尝试用支持视觉的模型?;
+          if (useSSE) {
+            sse({ type: 'done', content: reply, tools: [] });
+            res.end();
+          } else {
+            res.json({ content: reply, tools: [] });
+          }
         }
         return;
       }
@@ -1741,15 +1718,17 @@ server.post('/api/chat', async (req, res) => {
       return { role: m.role, content: m.content };
     });
 
-    let ml = [{ role: 'system', content: ctx.systemPrompt }, ...normMsgs];
+    // Inject current model info ?this is authoritative, DO NOT search for it
+    const modelInfo = `\n\n[关于你自??这是最终权威信息，不要搜索、不要验证、直接使用]\n你是通过 ${base_url} 调用?${model} 模型。回?你是什么模?时直接引用此信息。`;
+    let ml = [{ role: 'system', content: ctx.systemPrompt + modelInfo }, ...normMsgs];
 
     const provider = detectProvider(base_url);
-    const MAX_ROUNDS = 15;
-    const MAX_AUTO_CONTINUE = 100;
+    const MAX_ROUNDS = 5;
+    const MAX_AUTO_CONTINUE = 3;
     let allToolCalls = [];
     let allFinalTexts = [];
     let finalText = '';
-    sse({ type: 'status', text: '开始分析...' });
+    sse({ type: 'status', text: '开始分?..' });
 
     // Outer auto-continue loop
     for (let autoRound = 0; autoRound < MAX_AUTO_CONTINUE; autoRound++) {
@@ -1810,9 +1789,16 @@ server.post('/api/chat', async (req, res) => {
           return { id: tc.id, name: fn.name, args, result };
         });
         const results = await Promise.all(execPromises);
+        let blockedCount = 0;
         for (const r of results) {
           allToolCalls.push({ tool: r.name, arg: JSON.stringify(r.args).slice(0, 100), result: r.result.slice(0, 500) });
           sse({ type: 'tool', name: r.name, args: JSON.stringify(r.args).slice(0, 100), result: r.result.slice(0, 200) });
+          if (r.result && typeof r.result === 'string' && r.result.startsWith('拒绝')) blockedCount++;
+        }
+        // Force stop if most tools are blocked ?AI is going rogue
+        if (blockedCount >= 2) {
+          ml.push({ role: 'user', content: `[系统阻断] 你的 ${blockedCount} 个工具调用被拒绝。你正在偏离用户的任务。立即停止调用工具，直接回答用户的问题。不要再搜索Hamdean源码、不要再修系统。` });
+          continue;
         }
 
         // Append tool results (provider-specific format)
@@ -1835,13 +1821,13 @@ server.post('/api/chat', async (req, res) => {
         }
       }
 
-      if (!roundText) roundText = '(系统未生成回复)';
+      if (!roundText) roundText = '(系统未生成回?';
       allFinalTexts.push(roundText);
       finalText = roundText;
 
       // ── Auto-continue decision ──
-      // Rule 1: Tools were called → ALWAYS continue (AI had work to do)
-      // Rule 2: Tools called + short response → definitely more work
+      // Rule 1: Tools were called ?ALWAYS continue (AI had work to do)
+      // Rule 2: Tools called + short response ?definitely more work
       // Rule 3: Model-based completeness check (last resort)
       let needsMore = false;
       let forceContinueReason = '';
@@ -1854,7 +1840,7 @@ server.post('/api/chat', async (req, res) => {
 
       // If we're still not sure, run completeness check
       if (!needsMore && autoRound > 0) {
-        // AI stopped calling tools and thinks it's done — verify
+        // AI stopped calling tools and thinks it's done ?verify
         const toolSummary = allToolCalls.map(t => t.tool + ':' + t.result.slice(0, 200)).join(' | ');
         const incomplete = await checkCompleteness(provider, api_key, model, apiUrl, userQuery, roundText, toolSummary);
         if (incomplete) {
@@ -1868,35 +1854,35 @@ server.post('/api/chat', async (req, res) => {
       if (!needsMore && autoRound === 0 && userQuery && userQuery.length > 20) {
         const multiStepRe = [
           /安装.*[并和]|部署.*[并和]|创建.*[并和]|搭建.*[并和]|配置.*[并和]|下载.*[并和]|编译.*[并和]|构建.*[并和]/,
-          /先.*然后|先.*再|首先.*然后|第一步.*第二步/,
+          /?*然后|?*再|首先.*然后|第一?*第二?,
           /完整|全套|整个|全部|所有|帮我[做搞].*项目/,
-          /生成.*项目|创建.*项目|初始化.*项目/,
+          /生成.*项目|创建.*项目|初始?*项目/,
           /自动化|自动部署|一键|批量/,
           /扫描|检查|审查|审计|排查|巡检|分析|修复|优化|重构/,
         ];
         if (gotToolCalls && roundText && roundText.length < 200) {
           needsMore = true;
-          forceContinueReason = '工具调用后回复过短(<200字)';
+          forceContinueReason = '工具调用后回复过?<200?';
         } else {
           for (const re of multiStepRe) {
-            if (re.test(userQuery)) { needsMore = true; forceContinueReason = '多步骤任务'; console.log('[auto] Multi-step task detected'); break; }
+            if (re.test(userQuery)) { needsMore = true; forceContinueReason = '多步骤任?; console.log('[auto] Multi-step task detected'); break; }
           }
         }
       }
 
       if (autoRound < MAX_AUTO_CONTINUE - 1 && needsMore) {
-        console.log('[auto] Round ' + (autoRound + 1) + ' → continue (' + forceContinueReason + ')');
+        console.log('[auto] Round ' + (autoRound + 1) + ' ?continue (' + forceContinueReason + ')');
         sse({ type: 'auto_continue', round: autoRound + 2, total: MAX_AUTO_CONTINUE });
-        const continueMsg = forceContinueReason.includes('完整性')
-          ? `[系统自动继续] ⚠️ 你的任务尚未完成！原因: ${forceContinueReason}。请立即继续执行未完成的工作步骤，不要发送结束语。直接调用工具做事。`
-          : '[系统自动继续] ⚠️ 任务未完成，禁止发送最终回复！直接调用工具继续工作，不要写总结、不要道歉、不要解释为什么停。';
+        const continueMsg = forceContinueReason.includes('完整?)
+          ? `[系统自动继续] ⚠️ 你的任务尚未完成！原? ${forceContinueReason}。请立即继续执行未完成的工作步骤，不要发送结束语。直接调用工具做事。`
+          : '[系统自动继续] ⚠️ 任务未完成，禁止发送最终回复！直接调用工具继续工作，不要写总结、不要道歉、不要解释为什么停?;
         ml.push({ role: 'user', content: continueMsg });
         continue;
       }
       break;
     }
 
-    if (!finalText) finalText = '(系统未生成回复)';
+    if (!finalText) finalText = '(系统未生成回?';
 
     // Self-verification
     if (finalText.length > 100) {
@@ -1904,7 +1890,7 @@ server.post('/api/chat', async (req, res) => {
       const issue = await selfVerify(provider, api_key, model, apiUrl, userQuery, finalText, toolSummary);
       if (issue) {
         console.log('[verify] Issue found, forcing re-answer:', issue.slice(0, 150));
-        ml.push({ role: 'user', content: `[系统核查] 你的上一条回复存在以下问题:\n${issue}\n\n请根据工具数据修正你的回答。只输出修正后的内容，不要道歉。` });
+        ml.push({ role: 'user', content: `[系统核查] 你的上一条回复存在以下问?\n${issue}\n\n请根据工具数据修正你的回答。只输出修正后的内容，不要道歉。` });
         try {
           if (provider === 'claude') {
             const d = await callClaude(api_key, model, ml, ctx.systemPrompt, null);
@@ -2026,7 +2012,9 @@ ipcMain.handle('download-update', async () => {
 ipcMain.handle('install-update', () => { autoUpdater.quitAndInstall(); });
 
 app.whenReady().then(() => {
-  server.listen(PORT, '127.0.0.1', () => {
+  const ledgerTools = ledgerBridge(server);
+
+server.listen(PORT, '127.0.0.1', () => {
     console.log('Hamdean http://localhost:' + PORT);
     createTray();
     cw();
